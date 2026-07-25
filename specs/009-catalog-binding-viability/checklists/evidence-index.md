@@ -38,9 +38,14 @@ is the exhaustive, honestly-reached fallback.
   passed exactly as specified **except** Phase 8 (US6), which requires a
   populated envelope/scale-evidence record for every real-corpus pass. The
   pinned `community-plugins` and `rhdh-plugins` corpora each contain a genuine,
-  pre-existing `duplicate-canonical-id` defect (five unsubstituted Backstage
+  pre-existing `duplicate-canonical-id` defect (unsubstituted Backstage
   software-template skeleton files sharing the literal, un-templated
-  `metadata.name: "${{ values.name | dump }}"` placeholder) that deterministically,
+  `metadata.name: "${{ values.name | dump }}"` placeholder — **five** such files
+  in `community-plugins` and **nine** in `rhdh-plugins`; a tenth `rhdh-plugins`
+  descriptor, `bulk-import`, carries a *different* unsubstituted placeholder,
+  `${{ values.name }}`, so it canonicalizes distinctly and is not part of that
+  collision cohort — fifteen unsubstituted skeleton files in all, fourteen
+  colliding; see "Correction 1" below) that deterministically,
   correctly, fail-closed-triggers rejection on all 6 repetitions, byte-identically,
   for both corpora. SC-001 (byte-identical output) and SC-002 (whole-operation
   atomicity) both **hold** — the rejection itself is deterministic with zero
@@ -280,3 +285,163 @@ and obtain a new independent pre-output audit — **before** producing any
 generator-derived output. Reusing the current oracle without that cycle would
 carry a known-wrong expected result forward into a run whose outcome could
 actually depend on it.
+
+### Correction 1: placeholder-descriptor counts ("five", asserted of each corpus)
+
+**What the tracked record said.** Two merged summaries understated and
+mis-distributed the count of unsubstituted software-template skeleton
+descriptors:
+
+- This document (the `go-explicit` bullet above) read that the two corpora
+  "**each** contain a genuine, pre-existing `duplicate-canonical-id` defect
+  (**five** unsubstituted Backstage software-template skeleton files …)". The
+  defect is the universal quantifier **"each"**, which distributes "five" across
+  both corpora — false for `rhdh-plugins`. The corrected sentence retains "each"
+  only over *"contain a … defect"* (both corpora do) and attributes the counts
+  separately per corpus, so no number is distributed.
+- The root [`plan.md`](../../../plan.md) Phase 8 row read "(**five**
+  unsubstituted Nunjucks template skeletons sharing a literal `metadata.name`
+  placeholder)", stated once for both corpora together.
+
+**What the evidence records, and where it is itself imprecise.** Cross-checked
+between the `finding` field of each raw scratch envelope and a direct read of
+both pinned corpora (see "Basis of this re-derivation" below). **Two different
+quantities have to be kept apart**, and the merged record conflates them:
+
+| Corpus | Pinned commit | Descriptors sharing the identical `${{ values.name \| dump }}` form (the collision cohort) | Unsubstituted placeholder descriptors of any form |
+|---|---|---|---|
+| `community-plugins` | `92e9e4e09c76cc57f3475029b73e5ec84498a459` | **5** | **5** |
+| `rhdh-plugins` | `3b355ddfedb23c6656bd9effc8510f9926b765c1` | **9** | **10** |
+| **Total** | — | **14** | **15** |
+
+The two columns diverge for one reason. The `rhdh-plugins` envelope `finding`
+enumerates ten workspaces — `dcm`, `homepage`, `app-defaults`, `global-header`,
+`quickstart`, `bulk-import`, `adoption-insights`, `scorecard`, `translations`,
+`cost-management` — and describes all ten as "sharing the identical, literal,
+unsubstituted Nunjucks placeholder `${{ values.name | dump }}`". **That sentence
+is internally inconsistent.** The `bulk-import` descriptor carries
+`${{ values.name }}`, without the `| dump` filter. It is equally unsubstituted,
+but it is a *different string*, so it canonicalizes to a different id and cannot
+participate in the same duplicate group. The collision cohort is therefore
+**nine** in `rhdh-plugins`, not ten.
+
+**Basis of this re-derivation.** The counts above are not taken from the envelope
+`finding` text alone. All fifteen descriptors were read directly from the two
+pinned corpora — `community-plugins` at
+`92e9e4e09c76cc57f3475029b73e5ec84498a459` and `rhdh-plugins` at
+`3b355ddfedb23c6656bd9effc8510f9926b765c1` — and their literal `metadata.name`
+values compared. Anyone can reproduce this by fetching the same fifteen files at
+the same two commits. In `community-plugins`, all five (`rbac`, `topology`,
+`mend`, `mta`, `ocm`) carry `${{ values.name | dump }}`, so "five" is confirmed
+correct for that corpus on both measures. In `rhdh-plugins`:
+
+| Workspace | Literal `metadata.name` | In collision cohort |
+|---|---|---|
+| `dcm` | `${{ values.name \| dump }}` | yes |
+| `homepage` | `${{ values.name \| dump }}` | yes |
+| `app-defaults` | `${{ values.name \| dump }}` | yes |
+| `global-header` | `${{ values.name \| dump }}` | yes |
+| `quickstart` | `${{ values.name \| dump }}` | yes |
+| **`bulk-import`** | **`${{ values.name }}`** | **no — different string** |
+| `adoption-insights` | `${{ values.name \| dump }}` | yes |
+| `scorecard` | `${{ values.name \| dump }}` | yes |
+| `translations` | `${{ values.name \| dump }}` | yes |
+| `cost-management` | `${{ values.name \| dump }}` | yes |
+
+**Substantive consequence.** The `rhdh-plugins` duplicate group is nine
+descriptors, not ten. `bulk-import` is not a member of it. It remains an
+*invalid* entity name — see the named finding below, which it bears on directly
+— but invalidity and duplication are distinct conditions, and this descriptor is
+the corpus's own demonstration that they are.
+
+So: **"five" is correct for `community-plugins` on both measures.** It is wrong
+only as a claim about `rhdh-plugins`, and wrong as a claim about the corpora
+jointly. The originally-proposed replacement "fifteen in total" would have been
+correct for unsubstituted descriptors but **wrong for the collision cohort**,
+which is the quantity the surrounding sentence is actually about — so it is not
+used as a bare total here.
+
+**Provenance, stated neutrally.** The "five" phrasing entered the tracked record
+during PR #37 round-3 review remediation and merged in `5ff8705`; it was written
+by the coordinating session as summary narrative. It does **not** originate in
+the spike execution's own evidence artifacts — those record the two corpora
+separately, so the "each … five" distribution is not theirs. The nine-versus-ten
+imprecision above **is** in the `rhdh-plugins` envelope `finding` itself, and is
+recorded here as an **observed inaccuracy in the scratch evidence**: that field
+asserts all ten enumerated workspaces share `${{ values.name | dump }}`, which a
+direct read of the corpus disproves. The envelope is disclosed, **not edited** —
+it is frozen by convention like every other scratch artifact, and this remains a
+tracked-narrative correction only. This correction therefore fixes a summary
+error in one place and discloses an evidence-artifact error in the other; **no
+evidence artifact is edited**, in either case.
+
+**Scope of this correction.** Narrative only. No evidence artifact, hash,
+`EvidenceBundle`, task checkbox, FR, or SC is affected, and the recorded verdict
+is unchanged (`blocked`, `blockedShortfall =
+"envelope-or-scale-evidence-incomplete"`). The reason for the shortfall is
+identical either way: both corpora deterministically fail-closed-reject on
+`duplicate-canonical-id`. Only the magnitude and distribution were misstated.
+
+**Limit of this correction.** The fifteen placeholder descriptors were read
+directly at both pinned commits, so the figures above are corpus-derived and
+independently reproducible rather than inherited from the envelope text. What
+was **not** done is any wider re-enumeration: no count of total descriptors,
+total entity documents, or any other collision group in either corpus was
+re-derived here. These figures are a targeted correction, **not** a fresh corpus
+census, and nothing beyond the placeholder cohort should be read out of them.
+
+### Named finding: `metadata.name` is canonicalized without ever being validated
+
+Recorded here as a standing, named limitation alongside the carry-forward
+blocker above. **This finding is independent of the recorded verdict and of any
+future re-run**; it is a gap in the frozen contract text that exists whether or
+not feature009 is ever executed again.
+
+**The gap.** [`contracts/entity-identity.md`](../contracts/entity-identity.md)
+§1 defines canonicalization as exactly two steps — default the namespace, then
+lowercase `${K}:${NS}/${N}` in full. There is **no admissibility or
+validation step anywhere ahead of it.** Whatever string appears at
+`metadata.name` is accepted as a name and folded into a canonical ID. Nothing in
+`specs/009-catalog-binding-viability/**` references Backstage's own entity-name
+validators at any point.
+
+**Why that is a defect, on Backstage's own terms.** At the pinned research
+commit `1121a4facd9e321179d0402c3f355e4a649e84d9`, `makeValidator.ts` binds
+`isValidEntityName := KubernetesValidatorFunctions.isValidObjectName`, whose
+predicate is `/^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$/` with a 63-character
+limit, and `FieldFormatEntityPolicy` applies it to `metadata.name` as a
+**required** field. Both unsubstituted forms present in the corpora fail that
+predicate on character class — in `${{ values.name | dump }}` the `$`, `{`, `}`,
+`|` and spaces are all outside the permitted set, and `${{ values.name }}` fails
+on the same grounds minus the pipe — while ordinary descriptor names pass it
+unchanged.
+
+**The consequence.** Backstage would reject every one of these descriptors as a
+malformed entity outright — all fifteen unsubstituted ones, both the fourteen
+carrying `${{ values.name | dump }}` and the single one carrying
+`${{ values.name }}`, since each fails on character class. This spike's contract
+instead accepts each one as a well-formed name, lowercases it, and concatenates
+it. For the fourteen that share a string, they then collide with each other and
+the collision is reported as `triggerClass: "duplicate-canonical-id"`. The
+fail-closed rejection itself is correct and required by §3; what is imprecise is
+the *classification*. A descriptor that is not a valid Backstage entity at all is
+being characterized as a duplicate-identity condition between valid entities.
+
+**`bulk-import` is the sharper illustration.** Because its placeholder is
+`${{ values.name }}` rather than `${{ values.name | dump }}`, it canonicalizes to
+a *unique* id and collides with nothing. It is exactly as invalid as the other
+fourteen under `isValidObjectName`, but the contract has **no mechanism of any
+kind** that would notice. The duplicate rule catches the fourteen only
+incidentally — as a side effect of their sharing a string — and there is nothing
+behind it. This is why the gap is a contract gap rather than a reporting one:
+duplicate detection is not, and was never intended to be, a validity check, and
+the corpus contains a descriptor that proves the two conditions come apart.
+
+**What this finding does and does not assert.** It asserts that the contract
+canonicalizes unvalidated input and that this mis-classifies at least one real,
+recorded condition. It does **not** assert that adding validation would change
+the recorded verdict, satisfy SC-010, unblock this spike, authorize a re-run, or
+sanction any production adapter — none of those follow from it, and none are
+claimed here. Whether to close the gap, and how, is a separate decision requiring
+its own explicitly-scoped authorization; a draft ADR proposing one approach is
+under maintainer review and is **not** ratified.
