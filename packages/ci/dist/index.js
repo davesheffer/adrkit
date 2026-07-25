@@ -47739,6 +47739,10 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 var RECORD_FILE_PATTERN = /^[0-9]{4,}-.+\.md$/;
 var TEMPLATE_FILE_NAME = "0000-template.md";
+var NON_RECORD_FILE_NAMES = new Set(["readme.md", "index.md", "contributing.md", "template.md"]);
+function isConventionalNonRecordFileName(fileName) {
+  return fileName === TEMPLATE_FILE_NAME || NON_RECORD_FILE_NAMES.has(fileName.toLowerCase());
+}
 function isRecordFileName(fileName) {
   return fileName !== TEMPLATE_FILE_NAME && RECORD_FILE_PATTERN.test(fileName);
 }
@@ -47754,6 +47758,32 @@ async function discoverAdrFiles(dir = "docs/adr", cwd = process.cwd()) {
   const absoluteDir = toAbsolutePath(dir, cwd);
   const entries = await readdir(absoluteDir, { withFileTypes: true });
   return entries.filter((entry) => entry.isFile() && isRecordFileName(entry.name)).map((entry) => join(absoluteDir, entry.name)).sort((a, b) => normalizeDisplayPath(a, cwd).localeCompare(normalizeDisplayPath(b, cwd)));
+}
+var MAX_SKIP_SCAN_DEPTH = 8;
+async function collectSkippedMarkdown(absoluteDir, depth, found) {
+  const entries = await readdir(absoluteDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const path = join(absoluteDir, entry.name);
+    if (entry.isDirectory()) {
+      if (!entry.name.startsWith(".") && depth < MAX_SKIP_SCAN_DEPTH) {
+        await collectSkippedMarkdown(path, depth + 1, found);
+      }
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name.startsWith("."))
+      continue;
+    if (isConventionalNonRecordFileName(entry.name))
+      continue;
+    if (depth > 0)
+      found.push({ path, reason: "nested" });
+    else if (!isRecordFileName(entry.name))
+      found.push({ path, reason: "filename" });
+  }
+}
+async function discoverSkippedMarkdownFiles(dir = "docs/adr", cwd = process.cwd()) {
+  const found = [];
+  await collectSkippedMarkdown(toAbsolutePath(dir, cwd), 0, found);
+  return found.sort((a, b) => normalizeDisplayPath(a.path, cwd).localeCompare(normalizeDisplayPath(b.path, cwd)));
 }
 async function expandRecordInputs(paths, dir = "docs/adr", cwd = process.cwd()) {
   if (!paths || paths.length === 0) {
@@ -47784,6 +47814,14 @@ async function parseAdrFile(path, cwd = process.cwd()) {
     absolutePath,
     path: normalizeDisplayPath(absolutePath, cwd)
   };
+}
+// ../core/src/status/bucket.ts
+function decisionBucketFor(status) {
+  if (status === "accepted")
+    return "governing";
+  if (status === "draft" || status === "proposed")
+    return "activeProposals";
+  return "history";
 }
 // ../core/src/validate/findings.ts
 function compareOptional(a, b) {
@@ -47968,6 +48006,8 @@ function validateImportIncomplete(records) {
   return findings;
 }
 // ../core/src/validate/index.ts
+import { stat as stat2 } from "node:fs/promises";
+import { isAbsolute as isAbsolute2, resolve as resolve2 } from "node:path";
 function parseErrorFinding(error51, path) {
   if (error51 instanceof FrontmatterError) {
     return {
@@ -47985,9 +48025,33 @@ function parseErrorFinding(error51, path) {
     path
   };
 }
+function skippedFileFinding(skipped, cwd) {
+  const message = skipped.reason === "nested" ? "Markdown file is in a subdirectory of the corpus, and discovery reads only the top level of the corpus directory; move it to the corpus root as <id>-<slug>.md for it to be linted and enforced" : "Markdown file in the corpus directory is not a discoverable ADR record and was skipped; rename it to <id>-<slug>.md (four or more leading digits) for it to be linted and enforced";
+  return {
+    rule: "corpus-file-skipped",
+    severity: "warn",
+    message,
+    path: normalizeDisplayPath(skipped.path, cwd)
+  };
+}
+async function isDirectory(path) {
+  return stat2(path).then((info) => info.isDirectory(), () => false);
+}
+async function scannedDirectories(paths, dir, cwd) {
+  if (!paths || paths.length === 0)
+    return [dir];
+  const directories = new Set;
+  for (const path of paths) {
+    const absolutePath = isAbsolute2(path) ? path : resolve2(cwd, path);
+    if (await isDirectory(absolutePath))
+      directories.add(absolutePath);
+  }
+  return [...directories].sort((a, b) => normalizeDisplayPath(a, cwd).localeCompare(normalizeDisplayPath(b, cwd)));
+}
 async function lintCorpus(options = {}) {
   const cwd = options.cwd ?? process.cwd();
-  const files = await expandRecordInputs(options.paths, options.dir ?? "docs/adr", cwd);
+  const dir = options.dir ?? "docs/adr";
+  const files = await expandRecordInputs(options.paths, dir, cwd);
   const records = [];
   const findings = [];
   for (const file2 of files) {
@@ -48001,6 +48065,13 @@ async function lintCorpus(options = {}) {
       }
     } catch (error51) {
       findings.push(parseErrorFinding(error51, displayPath));
+    }
+  }
+  const checkedPaths = new Set(files);
+  for (const scanned of await scannedDirectories(options.paths, dir, cwd)) {
+    for (const skipped of await discoverSkippedMarkdownFiles(scanned, cwd)) {
+      if (!checkedPaths.has(skipped.path))
+        findings.push(skippedFileFinding(skipped, cwd));
     }
   }
   findings.push(...validateImportIncomplete(records));
@@ -48293,6 +48364,27 @@ function isCorpusRecordPath(file2, dir) {
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
+function toGoverningDecisions(records, matches) {
+  const byId = new Map(records.map((record2) => [record2.frontmatter.id, record2]));
+  return matches.map((match) => {
+    const frontmatter = byId.get(match.recordId)?.frontmatter;
+    const status = frontmatter?.status ?? "draft";
+    return {
+      recordId: match.recordId,
+      title: frontmatter?.title ?? "",
+      status,
+      bucket: decisionBucketFor(status),
+      ...frontmatter?.supersededBy ? { supersededBy: frontmatter.supersededBy } : {},
+      firedMatchers: match.firedMatchers
+    };
+  });
+}
+function bucketDecisions(decisions) {
+  const buckets = { governing: [], activeProposals: [], history: [] };
+  for (const decision of decisions)
+    buckets[decision.bucket].push(decision);
+  return buckets;
+}
 function checkChanges(input) {
   const dir = normalizeDir(input.dir);
   const changedFiles = uniqueSorted(input.changedFiles.map(toForwardSlash));
@@ -48304,16 +48396,21 @@ function checkChanges(input) {
     snapshots: input.snapshots,
     log: input.log
   });
-  const titleById = new Map(input.lint.records.map((record2) => [record2.frontmatter.id, record2.frontmatter.title]));
-  const governedBy = resolution.matches.map((match) => ({
-    recordId: match.recordId,
-    title: titleById.get(match.recordId) ?? "",
-    firedMatchers: match.firedMatchers
-  }));
+  const governedBy = toGoverningDecisions(input.lint.records, resolution.matches);
+  const buckets = bucketDecisions(governedBy);
   const changedRecordFindings = input.lint.findings.filter((finding) => finding.path !== undefined && changedRecordSet.has(finding.path));
   const findings = sortFindings([...resolution.findings, ...changedRecordFindings]);
   const ok = !changedRecordFindings.some((finding) => finding.severity === "error");
-  return { changedFiles, governedBy, changedRecords, findings, ok };
+  return {
+    changedFiles,
+    governedBy,
+    governing: buckets.governing,
+    activeProposals: buckets.activeProposals,
+    history: buckets.history,
+    changedRecords,
+    findings,
+    ok
+  };
 }
 // ../core/src/import/status.ts
 var MADR_RECOGNIZED_STATUSES = [
@@ -48374,6 +48471,11 @@ async function extractChanges(client) {
 var CI_COMMENT_MARKER = "<!-- adrkit:ci -->";
 var HEADING = "### Decisions governing this change";
 var EMPTY_STATE = "No governing decisions for the changed files.";
+var NO_ACCEPTED_STATE = "No **accepted** decisions govern the changed files. Records below matched but do not bind this change.";
+var PROPOSALS_HEADING = "#### Active proposals touching this change";
+var PROPOSALS_NOTE = "These are not yet ratified and do not bind this change:";
+var HISTORY_HEADING = "#### Historical records that once covered this change";
+var HISTORY_NOTE = "These no longer bind this change, and are listed for context only:";
 var MAX_GOVERNING = 50;
 function changedRecordFindings(outcome) {
   const changed = new Set(outcome.changedRecords);
@@ -48384,22 +48486,39 @@ function renderFindingLine(finding) {
   const field = finding.field ? ` (\`${finding.field}\`)` : "";
   return `- ${where} — \`${finding.rule}\`${field}: ${finding.message}`;
 }
+function renderDecisionLines(decision, withStatus) {
+  const status = withStatus ? ` _(${decision.status})_` : "";
+  const successor = decision.supersededBy ? ` — superseded by **${decision.supersededBy}**` : "";
+  const lines = [`- **${decision.recordId}** — ${decision.title}${status}${successor}`];
+  for (const matcher of decision.firedMatchers) {
+    lines.push(`  - via \`${matcher.type}\`: \`${matcher.pattern}\``);
+  }
+  return lines;
+}
+function renderDecisionList(decisions, withStatus) {
+  const shown = decisions.slice(0, MAX_GOVERNING);
+  const lines = shown.flatMap((decision) => renderDecisionLines(decision, withStatus));
+  const remaining = decisions.length - shown.length;
+  if (remaining > 0)
+    lines.push(`- …and ${remaining} more record${remaining === 1 ? "" : "s"}`);
+  return lines;
+}
 function renderComment(outcome) {
   const lines = [CI_COMMENT_MARKER, "", HEADING, ""];
   if (outcome.governedBy.length === 0) {
     lines.push(EMPTY_STATE);
+  } else if (outcome.governing.length === 0) {
+    lines.push(NO_ACCEPTED_STATE);
   } else {
-    const shown = outcome.governedBy.slice(0, MAX_GOVERNING);
-    for (const decision of shown) {
-      lines.push(`- **${decision.recordId}** — ${decision.title}`);
-      for (const matcher of decision.firedMatchers) {
-        lines.push(`  - via \`${matcher.type}\`: \`${matcher.pattern}\``);
-      }
-    }
-    const remaining = outcome.governedBy.length - shown.length;
-    if (remaining > 0) {
-      lines.push(`- …and ${remaining} more governing decision${remaining === 1 ? "" : "s"}`);
-    }
+    lines.push(...renderDecisionList(outcome.governing, false));
+  }
+  if (outcome.activeProposals.length > 0) {
+    lines.push("", PROPOSALS_HEADING, "", PROPOSALS_NOTE);
+    lines.push(...renderDecisionList(outcome.activeProposals, true));
+  }
+  if (outcome.history.length > 0) {
+    lines.push("", HISTORY_HEADING, "", HISTORY_NOTE);
+    lines.push(...renderDecisionList(outcome.history, true));
   }
   const findings2 = changedRecordFindings(outcome);
   const errors4 = findings2.filter((finding) => finding.severity === "error");
