@@ -9,7 +9,7 @@ Action:
 | `@adrkit/evaluator` | npm |
 | `@adrkit/cli` (`adr`) | npm |
 | `@adrkit/mcp` (`adrkit-mcp`) | npm |
-| `packages/ci/action.yml` | Git tag (latest immutable release `v0.2.0`, moving `v0`) |
+| `packages/ci/action.yml` | Git tag (latest immutable release `v0.2.1`, moving `v0`) |
 
 `@adrkit/ci` stays private because GitHub executes the committed Action bundle
 directly from the referenced repository ref.
@@ -70,7 +70,7 @@ From a clean checkout:
 
 ```sh
 bun install --frozen-lockfile
-bun run release:pack -- --tag v0.2.0
+bun run release:pack -- --tag v0.2.1
 # With Node 22 selected in your Node version manager:
 node .release/smoke/smoke.mjs "$PWD"
 # Switch the same shell to Node 24, then run:
@@ -82,6 +82,35 @@ The generated tarballs and manifest live under `.release/npm/` and are ignored
 by git. The Node version manager is intentionally not prescribed; CI uses
 `actions/setup-node` for both supported versions. Do not substitute the npm
 `node` package through `bunx`: its executable resolution is platform-dependent.
+
+### Published-consumer advisory audit
+
+The PR CI `bun audit` gate deliberately scopes itself to this workspace's
+resolved tree and does **not** audit consumer installs of the published
+`@adrkit/*` manifests
+([ADR-0017](adr/0017-keep-dependency-audit-scope-explicit-and-release-scoped.md)).
+That audit is release evidence, so it runs here, against the packed tarballs:
+
+```sh
+consumer_dir=$(mktemp -d)
+(
+  cd "$consumer_dir"
+  npm init -y >/dev/null
+  npm install --no-audit --no-fund \
+    "$OLDPWD/.release/npm/adrkit-core-0.2.1.tgz" \
+    "$OLDPWD/.release/npm/adrkit-mcp-0.2.1.tgz"
+  npm audit
+)
+```
+
+Root overrides are not published in package manifests, so a consumer resolves a
+different tree than this workspace does. Reconcile every advisory `npm audit`
+reports against `KNOWN_CONSUMER_ADVISORY_ACCEPTANCES` in `scripts/audit-gate.ts`:
+each one must already be recorded there with a matching advisory id, an
+unexpired `acceptedUntil`, and an `affectedPublishedVersion` equal to the version
+being cut. An unrecorded advisory, or a recorded one whose observed version has
+moved, is a release blocker until the record is refreshed or the exposure is
+removed.
 
 ## One-time npm bootstrap (completed for v0.1.0)
 
@@ -121,13 +150,152 @@ bootstrap described below.
    inter-package expectations and run `bun install` with stable Bun 1.3.14 when
    the lockfile changes.
 2. Merge the version change only after CI passes.
-3. Create and push the matching annotated tag, such as `v0.2.0`.
+3. Create and push the matching annotated tag, such as `v0.2.1`.
 4. Approve the protected `npm` environment deployment.
 5. Confirm the workflow published all packages, created the immutable GitHub
    release, and moved `v0` to the released commit.
 
 Never move an immutable `vX.Y.Z` tag. The release workflow may force-update only
 the moving major Action tag (`v0`, later `v1`, and so on).
+
+## v0.2.1 cutover runbook
+
+Run these steps only after the version-bump PR is the last change merged to
+`main`. The three branches this runbook originally waited on —
+`wave3-toward-1-0` (#60), `audit-gate-published-scope` (#62), and
+`adr-0015-decision` (#61) — plus `ratifier-gate` (#64) have all landed, and the
+v0.2.1 changelog was refreshed to cover them. If anything else merges ahead of
+the version bump, refresh the changelog and re-run the local simulation before
+tagging.
+
+1. Start from the final release commit on `main`.
+
+   ```sh
+   git switch main
+   git pull --ff-only origin main
+   git log -1 --oneline
+   ```
+
+   Verify that the last commit is the intended v0.2.1 release-prep commit.
+
+2. Re-run the local release simulation.
+
+   ```sh
+   bun install --frozen-lockfile
+   bun run release:pack -- --tag v0.2.1
+   # With Node 22 selected:
+   node .release/smoke/smoke.mjs "$PWD"
+   # With Node 24 selected:
+   node .release/smoke/smoke.mjs "$PWD"
+   bun .release/smoke/smoke.mjs "$PWD"
+   bun run release:publish -- --dry-run
+   bun -e "const m = await Bun.file('.release/npm/manifest.json').json(); if (m.version !== '0.2.1' || m.artifacts.length !== 4 || !m.artifacts.every((a) => a.version === '0.2.1')) throw new Error('release manifest is not entirely 0.2.1');"
+   ```
+
+   Verify that all commands exit 0; the final assertion fails if the release
+   manifest is missing or names any package version other than `0.2.1`. Then run
+   the [published-consumer advisory audit](#published-consumer-advisory-audit)
+   against the tarballs just packed, and confirm every reported advisory is
+   already recorded in `scripts/audit-gate.ts` at `affectedPublishedVersion:
+   '0.2.1'` with an unexpired acceptance.
+
+3. Create and push the immutable release tag.
+
+   ```sh
+   git tag -a v0.2.1 -m "adrkit v0.2.1"
+   git push origin v0.2.1
+   ```
+
+   Verify the release workflow started:
+
+   ```sh
+   release_sha=$(git rev-list -n 1 v0.2.1)
+   release_run_id=$(
+     gh run list \
+       --workflow release.yml \
+       --event push \
+       --commit "$release_sha" \
+       --limit 10 \
+       --json databaseId,headSha \
+       --jq "map(select(.headSha == \"$release_sha\")) | first | .databaseId // empty"
+   )
+   test -n "$release_run_id"
+   gh run view "$release_run_id" --json status,conclusion,headSha,url
+   ```
+
+4. Approve the protected `npm` environment deployment in GitHub Actions.
+
+   Verify the exact release workflow run succeeds:
+
+   ```sh
+   release_sha=$(git rev-list -n 1 v0.2.1)
+   release_run_id=$(
+     gh run list \
+       --workflow release.yml \
+       --event push \
+       --commit "$release_sha" \
+       --limit 10 \
+       --json databaseId,headSha \
+       --jq "map(select(.headSha == \"$release_sha\")) | first | .databaseId // empty"
+   )
+   test -n "$release_run_id"
+   gh run watch "$release_run_id" --exit-status
+   ```
+
+5. Confirm all npm packages and the MCP ownership metadata are published.
+
+   ```sh
+   for package in @adrkit/core @adrkit/evaluator @adrkit/cli @adrkit/mcp; do
+     test "$(npm view "${package}@0.2.1" version)" = "0.2.1"
+   done
+   test "$(npm view @adrkit/mcp@0.2.1 mcpName)" = "dev.adrkit/mcp"
+   ```
+
+   Verify the command exits 0; any missing package, wrong version, or missing
+   `mcpName` fails the step.
+
+6. Confirm the GitHub release and moving major Action tag.
+
+   ```sh
+   gh release view v0.2.1
+   release_sha=$(git rev-list -n 1 v0.2.1)
+   remote_release_sha=$(git ls-remote --tags origin 'refs/tags/v0.2.1^{}' | awk '{print $1}')
+   remote_major_sha=$(git ls-remote --tags origin refs/tags/v0 | awk '{print $1}')
+   test "$remote_release_sha" = "$release_sha"
+   test "$remote_major_sha" = "$release_sha"
+   gh api 'repos/mbeacom/adrkit/contents/packages/ci/queue/action.yml?ref=v0' --jq .path
+   ```
+
+   Verify the release exists, both tag comparisons exit 0, and the contents API
+   prints `packages/ci/queue/action.yml`.
+
+7. Publish the official MCP registry entry after the npm checks pass.
+
+   ```sh
+   cd packages/mcp
+   mcp-publisher publish
+   curl --fail --silent --show-error \
+     'https://registry.modelcontextprotocol.io/v0.1/servers?search=dev.adrkit/mcp' \
+     | grep -F 'dev.adrkit/mcp' \
+     | grep -F '0.2.1'
+   ```
+
+   Verify the command exits 0; the grep pipeline fails if the registry response
+   does not include both `dev.adrkit/mcp` and package version `0.2.1`. If
+   namespace proof has not been completed yet, follow
+   [`docs/DISTRIBUTION.md`](./DISTRIBUTION.md) section A before publishing.
+
+8. De-pin queue Action examples only after `queue@v0` resolves.
+
+   ```sh
+   gh api 'repos/mbeacom/adrkit/contents/packages/ci/queue/action.yml?ref=v0' --jq .sha
+   rg 'mbeacom/adrkit/packages/ci/queue@efef89b5d747ca175a1947f1ce2f4296dab54fa3'
+   ```
+
+   Verify the contents API returns the queue Action blob SHA. Then update
+   copy-pasteable documentation examples from the full commit pin to
+   `mbeacom/adrkit/packages/ci/queue@v0`; keep immutable pins where the text is
+   explicitly teaching reproducibility.
 
 ### One-time `@adrkit/mcp` bootstrap for v0.2.0 (completed)
 
