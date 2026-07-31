@@ -1,6 +1,6 @@
 {
   "name": "adrkit",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Decision memory for human and agent-authored plans — machine-readable, CI-enforceable architecture decision records.",
   "type": "module",
   "private": true,
@@ -40,9 +40,5 @@
     "@types/bun": "latest",
     "typescript": "^6",
     "zod": "^4"
-  },
-  "overrides": {
-    "@hono/node-server": "^2.0.5",
-    "fast-uri": "^3.1.4"
   }
 }

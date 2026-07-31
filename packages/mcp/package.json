@@ -1,7 +1,7 @@
 {
   "name": "@adrkit/mcp",
   "mcpName": "dev.adrkit/mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Local, read-only Model Context Protocol server exposing adrkit decision retrieval over stdio.",
   "type": "module",
   "license": "Apache-2.0",
@@ -46,10 +46,11 @@
   },
   "dependencies": {
     "@adrkit/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "zod": "^4"
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/bun": "latest"
   },
   "files": [

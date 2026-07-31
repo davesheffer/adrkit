@@ -7,8 +7,7 @@
  * construction time (data-model.md §8, contracts/tools.md §1).
  */
 
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 import { resolve } from 'node:path';
 import { buildRegisteredServer } from './server.ts';
 import { resolveCanonicalRoots, MAX_SOURCE_BYTES } from './corpus/projection.ts';
@@ -17,6 +16,22 @@ import type { ToolConfig } from './tools/shared.ts';
 export interface AdrkitMcpServerOptions {
   readonly cwd: string;
   readonly dir: string;
+  /**
+   * Called for out-of-band transport failures: a transport that fails to start,
+   * and every background error the connection reports afterwards (an stdin or
+   * stdout stream error, such as the EPIPE from a client that has gone away).
+   *
+   * This is not optional plumbing. `serveStdio` reports these **only** through
+   * its `onerror` callback — it consumes the rejected `start()` promise
+   * deliberately — so without a callback a broken transport tears the connection
+   * down while the process still exits 0. That is a dead server reporting
+   * success, the fail-quiet shape ADR-0016 rejects, so the default writes a
+   * diagnostic to stderr rather than staying silent. `main-module.ts` supplies a
+   * reporter that also fails the exit status.
+   *
+   * Never writes to stdout: that is reserved for protocol frames.
+   */
+  readonly onError: (error: Error) => void;
 }
 
 export interface AdrkitMcpServerHandle {
@@ -24,19 +39,30 @@ export interface AdrkitMcpServerHandle {
   close(): Promise<void>;
 }
 
+function writeTransportDiagnostic(error: Error): void {
+  process.stderr.write(`adrkit-mcp: transport error: ${error.message}\n`);
+}
+
 /**
  * The public stdio lifecycle factory. Performs NO filesystem access at construction;
- * `start()` validates the configured root, builds the closure-private server, creates
- * exactly one `StdioServerTransport`, and connects it. The concrete server, its
+ * `start()` validates the configured root, then hands a closure-private server factory
+ * to the SDK's connection-pinned `serveStdio` entry. The concrete server, its
  * registrations, and its transport remain unreachable to the caller.
+ *
+ * `serveStdio` — not a hand-wired `StdioServerTransport` — is what makes this server
+ * speak protocol revision 2026-07-28. The opening exchange selects the connection's
+ * era and pins one factory instance to it; `legacy: 'serve'` (the default) keeps
+ * 2025-era clients working unchanged. The four tools are registered once and served
+ * identically to both eras.
  */
 export function createAdrkitMcpServer(
   options?: Partial<AdrkitMcpServerOptions>,
 ): Readonly<AdrkitMcpServerHandle> {
   const cwd = resolve(options?.cwd ?? process.cwd());
   const dir = options?.dir ?? 'docs/adr';
+  const onError = options?.onError ?? writeTransportDiagnostic;
 
-  let server: McpServer | undefined;
+  let connection: StdioServerHandle | undefined;
   let startPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
   let closed = false;
@@ -48,7 +74,6 @@ export function createAdrkitMcpServer(
     if (startPromise) return startPromise;
 
     startPromise = (async () => {
-      let nextServer: McpServer | undefined;
       try {
         const roots = await resolveCanonicalRoots({ cwd, dir });
         const config: ToolConfig = {
@@ -57,19 +82,9 @@ export function createAdrkitMcpServer(
           expectedCanonicalCwd: roots.canonicalCwd,
           maxSourceBytes: MAX_SOURCE_BYTES,
         };
-        nextServer = buildRegisteredServer(config);
-        server = nextServer;
-        await nextServer.connect(new StdioServerTransport());
+        connection = serveStdio(() => buildRegisteredServer(config), { onerror: onError });
       } catch (error) {
-        server = undefined;
-        if (nextServer) {
-          try {
-            await nextServer.close();
-          } catch (closeError) {
-            startPromise = undefined;
-            throw new AggregateError([error, closeError], 'MCP server startup and cleanup failed');
-          }
-        }
+        connection = undefined;
         startPromise = undefined;
         throw error;
       }
@@ -82,8 +97,8 @@ export function createAdrkitMcpServer(
     closed = true;
     closePromise = (async () => {
       if (startPromise) await startPromise;
-      const current = server;
-      server = undefined;
+      const current = connection;
+      connection = undefined;
       if (current) await current.close();
     })();
     return closePromise;

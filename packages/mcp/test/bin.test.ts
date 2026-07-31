@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { main, reportUnhandledRejection } from '../src/main-module.ts';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { main, reportTransportError, reportUnhandledRejection } from '../src/main-module.ts';
+import { MODERN_PROTOCOL_VERSION, SERVER_INFO } from '../src/server.ts';
 import { createRepo, repoFromFixture, type TempRepo } from './helpers.ts';
 
 const BIN_SRC = resolve(dirname(fileURLToPath(import.meta.url)), '../src/bin.ts');
@@ -116,6 +118,74 @@ describe('adrkit-mcp bin — startup validation and exit codes', () => {
     expect(diagnostic).toContain('unhandled rejection: background transport failed');
     expect(failed).toBe(true);
   });
+
+  test('a transport error emits a stderr diagnostic and sets failure status', () => {
+    let diagnostic = '';
+    let failed = false;
+    reportTransportError(
+      new Error('EPIPE: broken pipe, write'),
+      (text) => {
+        diagnostic += text;
+      },
+      () => {
+        failed = true;
+      },
+    );
+    expect(diagnostic).toContain('transport error: EPIPE: broken pipe, write');
+    expect(failed).toBe(true);
+  });
+});
+
+describe('adrkit-mcp bin — transport failures are never silent', () => {
+  test('a client that dies mid-session produces a stderr diagnostic and a non-zero exit', async () => {
+    const repo = await repoFromFixture('status-corpus');
+    cleanups.push(repo.cleanup);
+
+    // `serveStdio` reports transport failures ONLY through its `onerror` callback
+    // (it consumes the rejected `start()` promise itself). Without that callback
+    // wired through to the bin, this exact sequence tears the connection down and
+    // still exits 0 — a dead server reporting success (ADR-0016).
+    const proc = spawn(process.execPath, [BIN_SRC, '--cwd', repo.root], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    let stdout = '';
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+
+    const initialize = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+    };
+    proc.stdin.write(`${JSON.stringify(initialize)}\n`);
+
+    const deadline = Date.now() + 5000;
+    while (!stdout.includes('"id":1') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(stdout).toContain('"id":1'); // the server is live before we break the pipe
+
+    proc.stdout.destroy(); // the client goes away
+    proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`); // forces a write to a dead pipe
+
+    const exitCode = await new Promise<number | 'timeout'>((resolve) => {
+      const timer = setTimeout(() => resolve('timeout'), 5000);
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code ?? -1);
+      });
+    });
+    proc.kill();
+
+    expect(stderr).toContain('transport error');
+    expect(exitCode).toBe(1);
+  });
 });
 
 describe('adrkit-mcp bin — real stdio subprocess', () => {
@@ -135,7 +205,10 @@ describe('adrkit-mcp bin — real stdio subprocess', () => {
     cleanups.push(repo.cleanup);
     const client = await spawnClient(repo);
     const list = await client.listTools();
-    expect(list.tools.map((t) => t.name).sort()).toEqual([
+    // Asserted UNSORTED: tools/list order is wire-visible on this era too, so the
+    // deterministic lexicographic order has to be observable here or nothing
+    // enforces it for 2025-era clients (ADR-0016).
+    expect(list.tools.map((t) => t.name)).toEqual([
       'get_decision',
       'get_decision_context',
       'list_superseded',
@@ -174,5 +247,200 @@ describe('adrkit-mcp bin — real stdio subprocess', () => {
     }
     expect(ids.has(2)).toBe(true);
     expect(ids.has(3)).toBe(true);
+  });
+});
+
+describe('adrkit-mcp bin — protocol revision 2026-07-28 over real stdio', () => {
+  async function spawnPinnedModernClient(repo: TempRepo): Promise<Client> {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [BIN_SRC, '--cwd', repo.root],
+    });
+    const client = new Client(
+      { name: 'bin-test-modern', version: '0.0.0' },
+      { versionNegotiation: { mode: { pin: MODERN_PROTOCOL_VERSION } } },
+    );
+    await client.connect(transport);
+    cleanups.push(() => client.close());
+    return client;
+  }
+
+  /** A 2025-era client against the same bin, for era-equivalence comparison. */
+  async function spawnLegacyClient(repo: TempRepo): Promise<Client> {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [BIN_SRC, '--cwd', repo.root],
+    });
+    const client = new Client({ name: 'bin-test-legacy', version: '0.0.0' });
+    await client.connect(transport);
+    cleanups.push(() => client.close());
+    return client;
+  }
+
+  /** Drive a paginated tool channel to exhaustion, collecting every item once. */
+  async function walkTool(
+    client: Client,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ id: string }[]> {
+    const all: { id: string }[] = [];
+    let cursor: string | undefined;
+    for (let guard = 0; guard < 100; guard += 1) {
+      const call = await client.callTool({ name, arguments: { ...args, ...(cursor ? { cursor } : {}) } });
+      const result = (call.structuredContent as { result: { items: { id: string }[]; cursor: string | null } }).result;
+      all.push(...result.items);
+      if (result.cursor == null) return all;
+      cursor = result.cursor;
+    }
+    throw new Error('walkTool exceeded its page guard');
+  }
+
+  test('a client pinned to 2026-07-28 negotiates the modern era and lists the four tools', async () => {
+    const repo = await repoFromFixture('edge-corpus');
+    cleanups.push(repo.cleanup);
+    const client = await spawnPinnedModernClient(repo);
+
+    expect(client.getProtocolEra()).toBe('modern');
+
+    const list = await client.listTools();
+    expect(list.tools.map((t) => t.name).sort()).toEqual([
+      'get_decision',
+      'get_decision_context',
+      'list_superseded',
+      'search_decisions',
+    ]);
+  });
+
+  test('every tool answers byte-equal structured content and text on both eras', async () => {
+    const repo = await repoFromFixture('edge-corpus');
+    cleanups.push(repo.cleanup);
+    const modern = await spawnPinnedModernClient(repo);
+    const legacy = await spawnLegacyClient(repo);
+
+    // ADR-0018's central claim: results do not vary by era. Asserted per tool
+    // over the whole payload, not one field — the 2026 codec is a distinct
+    // encode seam, so anything it reshapes has to show up here.
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['search_decisions', { query: 'a' }],
+      ['get_decision', { ref: '0010' }], // duplicate id -> ambiguous-local-id + candidates
+      ['get_decision_context', { files: ['docs/adr/0001.md'] }],
+      ['list_superseded', {}], // dangling / ambiguous / federated supersededBy states
+    ];
+
+    for (const [name, args] of calls) {
+      const [m, l] = await Promise.all([
+        modern.callTool({ name, arguments: args }),
+        legacy.callTool({ name, arguments: args }),
+      ]);
+      expect(m.structuredContent, `${name} structuredContent`).toEqual(l.structuredContent);
+      expect(m.content, `${name} content`).toEqual(l.content);
+    }
+  });
+
+  test('a cursor minted on the modern era resumes on it, and the walk matches the legacy era', async () => {
+    const repo = await repoFromFixture('edge-corpus');
+    cleanups.push(repo.cleanup);
+    const modern = await spawnPinnedModernClient(repo);
+    const legacy = await spawnLegacyClient(repo);
+
+    // limit:1 forces a cursor to be minted, returned, and fed back through the
+    // 2026 codec on every hop — the round trip a single-page call never exercises.
+    const modernWalk = await walkTool(modern, 'list_superseded', { limit: 1 });
+    const legacyWalk = await walkTool(legacy, 'list_superseded', { limit: 1 });
+
+    expect(modernWalk.map((e) => e.id)).toEqual(['0011', '0012', '0013', '0014']);
+    expect(modernWalk).toEqual(legacyWalk);
+  });
+
+  test('an invalid cursor stays a structured outcome on the modern era, not a JSON-RPC error', async () => {
+    const repo = await repoFromFixture('edge-corpus');
+    cleanups.push(repo.cleanup);
+    const modern = await spawnPinnedModernClient(repo);
+
+    // The 2026 revision tightened result validation; a non-error outcome must not
+    // get promoted into a protocol error by the stricter codec.
+    const call = await modern.callTool({ name: 'list_superseded', arguments: { cursor: 'not-a-real-cursor' } });
+    expect(call.isError).toBeFalsy();
+    const result = (call.structuredContent as { result: { outcome: string; reason: string; message: string } }).result;
+    expect(result.outcome).toBe('invalid-cursor');
+    expect(result.reason).toBe('decode-failed');
+    expect(result.message).toBe('Cursor could not be decoded.');
+  });
+
+  test('a raw 2026-07-28 exchange needs no initialize handshake and carries its version in _meta', async () => {
+    const repo = await repoFromFixture('status-corpus');
+    cleanups.push(repo.cleanup);
+    const proc = Bun.spawn([process.execPath, BIN_SRC, '--cwd', repo.root], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const envelope = {
+      'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,
+      'io.modelcontextprotocol/clientCapabilities': {},
+      'io.modelcontextprotocol/clientInfo': { name: 'raw-modern', version: '0.0.0' },
+    };
+    const frames = [
+      { jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: envelope } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: envelope } },
+      {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'get_decision', arguments: { ref: '0001' }, _meta: envelope },
+      },
+    ];
+    proc.stdin.write(frames.map((f) => `${JSON.stringify(f)}\n`).join(''));
+    await proc.stdin.end();
+    const out = await new Response(proc.stdout).text();
+    proc.kill();
+    await proc.exited;
+
+    const byId = new Map<number, Record<string, unknown>>();
+    for (const line of out.split('\n').filter((l) => l.length > 0)) {
+      const message = JSON.parse(line) as { id?: number; error?: unknown; result?: Record<string, unknown> };
+      if (typeof message.id === 'number') {
+        expect(message.error).toBeUndefined();
+        byId.set(message.id, message.result as Record<string, unknown>);
+      }
+    }
+
+    const discover = byId.get(1) as {
+      supportedVersions?: string[];
+      capabilities?: Record<string, unknown>;
+      resultType?: string;
+      _meta?: Record<string, unknown>;
+    };
+    expect(discover?.supportedVersions).toEqual([MODERN_PROTOCOL_VERSION]);
+    expect(discover?.capabilities?.tools).toBeDefined();
+    expect(discover?.resultType).toBe('complete');
+    expect(discover?._meta?.['io.modelcontextprotocol/serverInfo']).toMatchObject({ name: SERVER_INFO.name });
+
+    // Every 2026-era result is self-describing: `resultType` plus server identity in
+    // _meta; the cacheable list results additionally carry our SEP-2549 hints.
+    const list = byId.get(2) as {
+      resultType?: string;
+      ttlMs?: number;
+      cacheScope?: string;
+      tools?: { name: string }[];
+      _meta?: Record<string, unknown>;
+    };
+    expect(list?.resultType).toBe('complete');
+    expect(list?.ttlMs).toBe(300_000);
+    expect(list?.cacheScope).toBe('public');
+    // Advertised in deterministic (lexicographic) order — asserted unsorted.
+    expect(list?.tools?.map((t) => t.name)).toEqual([
+      'get_decision',
+      'get_decision_context',
+      'list_superseded',
+      'search_decisions',
+    ]);
+    expect(list?._meta?.['io.modelcontextprotocol/serverInfo']).toMatchObject({ name: SERVER_INFO.name });
+
+    const call = byId.get(3) as { resultType?: string; ttlMs?: number; structuredContent?: { result: { outcome: string } } };
+    expect(call?.resultType).toBe('complete');
+    // tools/call is not a cacheable result — a corpus read never carries cache fields.
+    expect(call?.ttlMs).toBeUndefined();
+    expect(call?.structuredContent?.result.outcome).toBe('found');
   });
 });
