@@ -9,6 +9,81 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Added
+
+- **`@adrkit/spec-kit` — the Spec Kit extension** (`packages/adapters/spec-kit/`),
+  the first package under `packages/adapters/*` and the second distribution
+  surface [ADR-0003](docs/adr/0003-ship-as-spec-kit-extension.md) commits to. It
+  adds three namespaced commands to a [Spec Kit](https://github.com/github/spec-kit)
+  project — `/speckit.adrkit.context` (pull the governing decisions into agent
+  context before planning), `/speckit.adrkit.check` (check a produced plan against
+  them, routing through the deterministic evaluator when a snapshot bundle is
+  configured), and `/speckit.adrkit.draft` (scaffold a draft ADR from the plan
+  artifact) — plus one **optional** `after_plan` hook that offers to run the check.
+  Pinned to Spec Kit `>=0.13.0,<0.16.0`, verified by installing and rendering
+  against 0.13.0, 0.14.4, and 0.15.1. Distributed on **npm** and via the **Spec
+  Kit community catalog**; the manifest declares `category: process` and
+  `effect: read-write` for `specify extension info` and the catalog.
+
+  Hooks can only reach commands that do not write: `draft` is the sole writing
+  command and is unreachable from any hook, because a plan-phase hook creating
+  records unprompted would manufacture decision memory rather than record it. That
+  boundary, the never-mandatory hook, the honest-failure contract, and `check`'s
+  zero-mutation guarantee are enforced by tests, each observed failing under a
+  deliberately introduced defect before being trusted
+  ([ADR-0016](docs/adr/0016-require-every-check-to-be-observed-failing-before-it-counts-as-coverage.md)).
+
+  **Landed / reference-verified** on [ADR-0014](docs/adr/0014-stage-phase-landing-evidence-across-a-three-rung-validation-ladder.md)
+  rungs 1–2. Rung 2 is a maintainer-owned isolated reference repository that
+  reinstalls the extension from a pinned adrkit commit into a real Spec Kit
+  project across all three declared upstream versions, on every push and weekly —
+  41 self-verifying, fail-closed assertions each. The gate was observed failing
+  on a deliberate divergence run before being trusted. Evidence index:
+  [`docs/reference-verification-spec-kit-extension.md`](docs/reference-verification-spec-kit-extension.md).
+  Not externally validated (rung 3 open).
+
+  Authorized by [ADR-0019](docs/adr/0019-ship-the-spec-kit-extension-treating-the-spike-no-go-as-a-measurement-artifact.md),
+  which records the `no-go` verdict from spike
+  [008](specs/008-spec-kit-hook-viability/) as a measurement artifact of that
+  spike's own verdict procedure — a byte-identical `git status` bar applied to
+  `install` and `remove`, lifecycle actions whose entire purpose is to write files
+  — rather than a finding against the mechanism, which the spike verified working
+  in every respect. Spike 008's verdict, evidence bundle, and audit history are
+  unmodified.
+
+- The release pipeline now supports **independently versioned, dist-less
+  packages**. `scripts/release-pack.ts` previously asserted that every release
+  package shared one version and shipped a `dist` — both true of a single
+  lockstep Node surface, neither true of an adapter, and forcing them would have
+  contradicted ADR-0007's "adapters ... are versioned independently. Their
+  semver contract is with their upstream, not with our core." Definitions now
+  declare `versioning: 'lockstep' | 'independent'` and `shipsNodeArtifact`, and a
+  package that ships no Node artifact is *rejected* for publishing `dist`.
+  Workspace dependencies also now resolve against the dependency's own version
+  rather than the depender's.
+
+### Changed
+
+- ADR-0007's `core-has-no-adapter-deps` assertion is no longer vacuous. It had
+  nothing to guard while `packages/adapters/` was empty; with the first adapter
+  present it has been observed failing against a deliberately introduced
+  `@adrkit/core → @adrkit/spec-kit` dependency.
+
+### Fixed
+
+Two packaging defects that only surfaced by installing the extension for real,
+against live Spec Kit, rather than reasoning about it:
+
+- `specify extension add --dev` copies the extension directory verbatim and does
+  **not** skip `node_modules`. Bun's isolated linker had created one for a single
+  `@types/bun` devDependency, and the workspace symlink inside it aborted the
+  install partway through with a `shutil.Error`, leaving a half-installed
+  extension. `@adrkit/spec-kit` now declares no dependencies at all; types
+  resolve from the root tsconfig.
+- The install was depositing the extension's own test suite and `tsconfig.json`
+  into the consuming project's `.specify/extensions/adrkit/`. Now excluded via
+  `.extensionignore`, which upstream supports across the whole pinned range.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
