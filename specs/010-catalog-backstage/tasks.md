@@ -288,7 +288,7 @@ matches, and the recorded selection basis and size to be frozen in the **same cy
 with the audit recording its own hashes and its own PASS/FAIL. Phase B may run
 concurrently with Phase A and with nothing else.
 
-- [ ] T013 [US1] Create the tracked evidence tree — `<EVIDENCE>/README.md`,
+- [X] T013 [US1] Create the tracked evidence tree — `<EVIDENCE>/README.md`,
       `<EVIDENCE>/frozen-expectations/`, `<EVIDENCE>/accept-corpus-freeze/`, and
       `<EVIDENCE>/negative-cases/`.
       **`negative-cases/` is a SHARED, CROSS-PHASE tree.** Roughly twenty tasks spanning
@@ -303,7 +303,7 @@ concurrently with Phase A and with nothing else.
       Discharges: none — enables FR-053, FR-054, FR-055
       Depends: none
 
-- [ ] T014 [US1] **Record the accept-corpus selection basis and size before acting on
+- [X] T014 [US1] **Record the accept-corpus selection basis and size before acting on
       it.** Write `<EVIDENCE>/accept-corpus-freeze/selection-basis.md` stating how the
       corpus was chosen and how large it is, and how the populations documented in
       `research.md` R14 were handled — specifically the invalid-`metadata.name`
@@ -314,14 +314,14 @@ concurrently with Phase A and with nothing else.
       Discharges: FR-055
       Depends: T013
 
-- [ ] T015 [US1] Author the maintainer-authored `adrkit.io/owned-paths` overlay at
+- [X] T015 [US1] Author the maintainer-authored `adrkit.io/owned-paths` overlay at
       `<EVIDENCE>/accept-corpus-freeze/overlay.json`. This content is maintainer-authored,
       never upstream-authored, and the record must say so.
       Barrier: IS THE BARRIER
       Discharges: FR-054 (overlay half)
       Depends: T014
 
-- [ ] T016 [US1] Author the expected path matches per canonical id at
+- [X] T016 [US1] Author the expected path matches per canonical id at
       `<EVIDENCE>/accept-corpus-freeze/expected-paths.json`. These are **hand-derived
       from the frozen contracts**, never produced by, checked against, or adjusted to
       match any generator — no generator exists at this point, and Phase E may not
@@ -330,7 +330,7 @@ concurrently with Phase A and with nothing else.
       Discharges: FR-054 (expected-paths half)
       Depends: T015
 
-- [ ] T017 [US1] **Re-freeze the oracle (the fresh T014 step).** Write
+- [X] T017 [US1] **Re-freeze the oracle (the fresh T014 step).** Write
       `<EVIDENCE>/frozen-expectations/frozen-expectation-set.json` containing
       `derivedPathPatterns` in `compareCodeUnits`-sorted order — this ordering is the
       correction the fresh cycle exists to make; input order is the defect — plus
@@ -339,7 +339,7 @@ concurrently with Phase A and with nothing else.
       Discharges: FR-053
       Depends: T014
 
-- [ ] T018 [US1] Assemble `<EVIDENCE>/accept-corpus-freeze/accept-corpus-freeze.json`
+- [X] T018 [US1] Assemble `<EVIDENCE>/accept-corpus-freeze/accept-corpus-freeze.json`
       — `corpusRef`, `selectionBasis`, `size`, `overlay`, `expectedPaths`, `contentHash`
       — **in the same cycle** as T014–T017. This artifact and the T017 oracle are
       frozen together or not at all.
@@ -347,7 +347,7 @@ concurrently with Phase A and with nothing else.
       Discharges: FR-054 (same-cycle freeze)
       Depends: T015, T016, T017
 
-- [ ] T019 [US1] **The independent audit (the T014a step).** A reviewer with no
+- [X] T019 [US1] **The independent audit (the T014a step).** A reviewer with no
       authoring involvement in T014–T018 **recomputes** both content hashes from the
       artifacts themselves — never copies the recorded values — confirms the
       `derivedPathPatterns` ordering is `compareCodeUnits` and not input order, records
@@ -359,7 +359,7 @@ concurrently with Phase A and with nothing else.
       Discharges: FR-057 (step (a) half), SC-010
       Depends: T018
 
-- [ ] T020 [US1] **Observed failing.** Construct an oracle variant whose
+- [x] T020 [US1] **Observed failing.** Construct an oracle variant whose
       `derivedPathPatterns` are in input order rather than `compareCodeUnits` order;
       run the T019 audit against it; observe the audit return FAIL and record the
       exact reason; restore the correct artifact; observe PASS. Retain the failing
@@ -368,7 +368,7 @@ concurrently with Phase A and with nothing else.
       Discharges: none — supplies the ADR-0016 observation for FR-053
       Depends: T019
 
-- [ ] T021 [US1] **Observed failing.** Construct an audit run that confirms hash
+- [x] T021 [US1] **Observed failing.** Construct an audit run that confirms hash
       integrity but never reaches an adequacy finding; observe it recorded as FAIL
       against SC-010 rather than silently accepted; restore; observe PASS. Retain at
       `<EVIDENCE>/negative-cases/audit-integrity-only/`.
@@ -376,7 +376,7 @@ concurrently with Phase A and with nothing else.
       Discharges: none — supplies the ADR-0016 observation for SC-010
       Depends: T019, T020
 
-- [ ] T022 [US1] Build the CI freeze-hash drift check — **R5 mechanism 2**. It
+- [x] T022 [US1] Build the CI freeze-hash drift check — **R5 mechanism 2**. It
       re-derives the content hashes of everything under `<EVIDENCE>/frozen-expectations/`
       and `<EVIDENCE>/accept-corpus-freeze/` and fails the build on any drift.
       Files: `scripts/check-freeze-hashes.ts`, `scripts/check-freeze-hashes.test.ts`,
@@ -385,7 +385,7 @@ concurrently with Phase A and with nothing else.
       Discharges: none — implements R5 mechanism 2
       Depends: T019
 
-- [ ] T023 [US1] **Observed failing.** Mutate a single byte of one frozen artifact;
+- [x] T023 [US1] **Observed failing.** Mutate a single byte of one frozen artifact;
       run the T022 check; observe it fail and record the exact reason; restore the byte;
       observe the pass.
       Files: `scripts/check-freeze-hashes.test.ts`,
@@ -394,7 +394,7 @@ concurrently with Phase A and with nothing else.
       Discharges: none — supplies the ADR-0016 observation for R5 mechanism 2
       Depends: T022
 
-- [ ] T024 [US1] **BARRIER B CHECKPOINT — HARD GATE.** Confirm and record all three
+- [x] T024 [US1] **BARRIER B CHECKPOINT — HARD GATE.** Confirm and record all three
       R5 mechanisms simultaneously:
       **(1) input absence** — no input manifest exists anywhere in the tree, and the
       adapter contains no recursive walking or glob discovery that could substitute for
