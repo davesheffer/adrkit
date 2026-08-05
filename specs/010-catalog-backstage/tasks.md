@@ -148,7 +148,7 @@ already exist, e.g. `scripts/check-deps.test.ts`).
 **Barrier side: BEFORE.** No task in this phase reads a descriptor, computes an
 ownership result, or produces an envelope. Phase A may run concurrently with Phase B.
 
-- [ ] T001 [P] Create the adapter package skeleton at `<ADAPTER>` — `package.json`
+- [X] T001 [P] Create the adapter package skeleton at `<ADAPTER>` — `package.json`
       (name `@adrkit/catalog-backstage`, `type: module`, `publishConfig.access: public`,
       and the `"//versioning"` note citing ADR-0007 and `ReleaseVersioning` in
       `scripts/release-pack.ts`, following the `packages/adapters/spec-kit/` precedent),
@@ -158,7 +158,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: none
       Contract: `package-boundary.md` §2, §6
 
-- [ ] T002 [P] Create the consumer package skeleton at `<CONSUMER>` — `package.json`
+- [X] T002 [P] Create the consumer package skeleton at `<CONSUMER>` — `package.json`
       (name `@adrkit/catalog-envelope` — working name, `type: module`),
       `tsconfig.json`, `src/index.ts`. This package is **not** under
       `packages/adapters/` and must not be.
@@ -167,7 +167,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: none
       Contract: `package-boundary.md` §3
 
-- [ ] T003 Confirm both packages are picked up by the existing root `workspaces`
+- [X] T003 Confirm both packages are picked up by the existing root `workspaces`
       globs `["packages/*", "packages/adapters/*"]` (root `package.json` lines 18–21)
       **without modifying them** — a needed change to those globs is a signal that
       placement is wrong. Declare the Node target in each package's `engines` field;
@@ -178,20 +178,20 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Discharges: FR-051
       Depends: T001, T002
 
-- [ ] T004 [P] [US9] Write `<ADAPTER>/README.md` using ADR-0014 rung-1 language only,
+- [X] T004 [P] [US9] Write `<ADAPTER>/README.md` using ADR-0014 rung-1 language only,
       with no rung-2 or rung-3 synonyms, and carrying the FR-063 adoption statement:
       what a downstream consumer may and may not conclude from this adapter's output.
       Barrier: BEFORE
       Discharges: FR-062, FR-063 (documentation half), SC-017
       Depends: T001
 
-- [ ] T005 [P] Write `<CONSUMER>/README.md` under the same rung-1 honesty constraint,
+- [X] T005 [P] Write `<CONSUMER>/README.md` under the same rung-1 honesty constraint,
       framing the package as an integrity validator and never as a correctness oracle.
       Barrier: BEFORE
       Discharges: none — supports SC-017
       Depends: T002
 
-- [ ] T006 [P] [US9] Add a structural assertion test proving the adapter is reachable
+- [X] T006 [P] [US9] Add a structural assertion test proving the adapter is reachable
       only by explicit static import and registers no dynamic loader, plugin registry,
       or discovery hook.
       Files: `<ADAPTER>/test/no-dynamic-loader.test.ts`.
@@ -199,7 +199,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Discharges: FR-002
       Depends: T001
 
-- [ ] T007 [P] Add a locality guard test asserting that neither new package writes to
+- [X] T007 [P] Add a locality guard test asserting that neither new package writes to
       or regenerates `schema/`, and that the envelope shape each package needs is
       declared locally rather than in a shared schema module.
       Files: `<ADAPTER>/test/envelope-shape-locality.test.ts`.
@@ -208,7 +208,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: T001, T002
       Contract: `package-boundary.md` §5
 
-- [ ] T008 Add explicit `allowedDependenciesFor()` entries for `@adrkit/catalog-backstage`
+- [X] T008 Add explicit `allowedDependenciesFor()` entries for `@adrkit/catalog-backstage`
       (deps `@adrkit/core`, `picomatch`, `yaml`; devDeps `@types/bun`, `@types/picomatch`)
       and `@adrkit/catalog-envelope` (deps `@adrkit/core`; devDeps `@types/bun`).
       Do **not** amend the existing `@adrkit/cli` entry.
@@ -218,7 +218,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: T001, T002
       Contract: `package-boundary.md` §2, §4
 
-- [ ] T009 [US9] **Observed failing.** Introduce a dependency edge from `@adrkit/core`
+- [X] T009 [US9] **Observed failing.** Introduce a dependency edge from `@adrkit/core`
       (then `@adrkit/cli`, then a `schema/`-owning package) onto the adapter; run
       `bun run check:deps`; observe the failure and record the exact emitted reason
       string; remove the edge; observe the pass. Retain the failing inputs as a
@@ -228,7 +228,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Discharges: SC-015
       Depends: T008
 
-- [ ] T010 [US9] **Observed failing.** Add `@adrkit/catalog-backstage` to the consumer's
+- [X] T010 [US9] **Observed failing.** Add `@adrkit/catalog-backstage` to the consumer's
       dependencies; run `bun run check:deps`; observe the guard at
       `scripts/check-deps.ts:175–182` emit `non-adapter workspace depends on an
       adapter package`; record the exact string; remove; observe the pass.
@@ -238,7 +238,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: T008, T009
       Contract: `package-boundary.md` §3
 
-- [ ] T011 [US9] **Observed failing.** Add `@adrkit/catalog-envelope` to the adapter's
+- [X] T011 [US9] **Observed failing.** Add `@adrkit/catalog-envelope` to the adapter's
       dependencies; run `bun run check:deps`; observe the guard at
       `scripts/check-deps.ts:196–204` emit `<name> declares a dependency outside its
       allowed public surface`; record the exact string; remove; observe the pass.
@@ -248,7 +248,7 @@ ownership result, or produces an envelope. Phase A may run concurrently with Pha
       Depends: T008, T010
       Contract: `package-boundary.md` §3
 
-- [ ] T012 [US9] **Observed failing — closes the silent-unconstrained trap.**
+- [X] T012 [US9] **Observed failing — closes the silent-unconstrained trap.**
       `allowedDependenciesFor()` returns `undefined` for any package with no entry
       (`scripts/check-deps.ts:151`), and the allowed-surface guard is then skipped
       entirely — so a package with no entry passes `check:deps` no matter what it
