@@ -86,6 +86,125 @@ describe('scanSourceMarkers — comment handling', () => {
   });
 });
 
+/**
+ * A fenced block is where a file *shows* the syntax. Issue #101 measured the cost of
+ * not knowing that: three of the four marker-looking lines left in this repository
+ * after the dedicated-line rule landed were documentation of the feature, and all
+ * three declared `0012` — an `accepted` record, the bucket an agent treats as binding.
+ */
+describe('scanSourceMarkers — a fenced example is not a declaration', () => {
+  test('a marker inside a fenced block does not declare', () => {
+    expect(refsOf(['Example:', '```ts', '// @adr 0012', '```'].join('\n'))).toEqual([]);
+
+    // Control: the identical line, one fence removed, is still a declaration.
+    expect(refsOf(['Example:', '// @adr 0012'].join('\n'))).toEqual(['0012']);
+  });
+
+  test('a marker below a closed fence declares again', () => {
+    expect(refsOf(['```', '// @adr 0011', '```', '// @adr 0012'].join('\n'))).toEqual(['0012']);
+  });
+
+  test('an unclosed fence runs to the end of the window', () => {
+    // Otherwise an example at the end of a document un-fences everything above it.
+    expect(refsOf(['```', '// @adr 0012'].join('\n'))).toEqual([]);
+  });
+
+  test('a longer fence closes a shorter one, and a shorter one never closes a longer', () => {
+    expect(refsOf(['```', 'x', '````', '// @adr 0012'].join('\n'))).toEqual(['0012']);
+    expect(refsOf(['````', 'x', '```', '// @adr 0012'].join('\n'))).toEqual([]);
+  });
+
+  test('backtick and tilde fences do not close each other', () => {
+    expect(refsOf(['```', '~~~', '// @adr 0012'].join('\n'))).toEqual([]);
+    expect(refsOf(['~~~', '```', '// @adr 0012'].join('\n'))).toEqual([]);
+  });
+
+  test('a closing line may not carry an info string', () => {
+    expect(refsOf(['```ts', '```ts', '// @adr 0012'].join('\n'))).toEqual([]);
+  });
+
+  test('a backtick fence info string may not itself contain a backtick', () => {
+    // CommonMark 4.5: this line does not open a fence at all, so what follows is code
+    // only in appearance and the marker below it is a real declaration.
+    expect(refsOf(['``` `js`', '// @adr 0012'].join('\n'))).toEqual(['0012']);
+  });
+
+  test('a fence may be indented three spaces, and four spaces is not a fence', () => {
+    expect(refsOf(['   ```', '// @adr 0012'].join('\n'))).toEqual([]);
+    expect(refsOf(['    ```', '// @adr 0012'].join('\n'))).toEqual(['0012']);
+  });
+
+  test('a fence inside a block-comment continuation is a known blind spot', () => {
+    // The fence has to lead the physical line for the same reason the marker does:
+    // it is the one thing the scanner can know without knowing the language. Pinned as
+    // a negative case so that closing it later is a visible change, not a silent one.
+    const source = ['/**', ' * ```', ' * @adr 0012', ' * ```', ' */'].join('\n');
+    expect(refsOf(source)).toEqual(['0012']);
+  });
+
+  test('fence state holds in a window that stopped short of the end of the file', () => {
+    // The marker sits *inside* the window and inside an unclosed fence, with enough
+    // below it to truncate. Putting it below the window instead would pass with or
+    // without fence tracking, which would make this assertion decorative.
+    const source = `\`\`\`\n${MARKER_LINE}\n${'x'.repeat(MARKER_HEADER_WINDOW_BYTES + 500)}\n`;
+    const scan = scanSourceMarkers(source, 'src/sync.ts');
+
+    expect([scan.markers, scan.truncated]).toEqual([[], true]);
+  });
+});
+
+/**
+ * The introducer list is a union of what *source languages* hide from their own
+ * output. Markdown is not one of them: `#` is a heading and `*` is a list bullet, so
+ * lending markdown that list let a sentence a reader can see declare a decision.
+ */
+describe('scanSourceMarkers — markdown declares in markdown comments', () => {
+  test('an HTML comment declares, and so does an MDX expression comment', () => {
+    expect(refsOf('<!-- @adr 0012 -->', 'docs/guide.md')).toEqual(['0012']);
+    expect(refsOf('{/* @adr 0012 */}', 'site/src/content/docs/commands.mdx')).toEqual(['0012']);
+  });
+
+  test('a heading and a list bullet are content in markdown, not comments', () => {
+    expect(refsOf('# @adr 0012', 'docs/guide.md')).toEqual([]);
+    expect(refsOf('* @adr 0012 explains this', 'docs/guide.md')).toEqual([]);
+
+    // Control: the same two line shapes are real comments in a shell script and a
+    // block comment, and still declare there.
+    expect(refsOf('# @adr 0012', 'scripts/sync.sh')).toEqual(['0012']);
+    expect(refsOf(' * @adr 0012', 'src/sync.ts')).toEqual(['0012']);
+  });
+
+  test('no source-language introducer declares in markdown', () => {
+    const lines = [
+      '// @adr 0012',
+      '/* @adr 0012 */',
+      '-- @adr 0012',
+      '; @adr 0012',
+      '% @adr 0012',
+      '""" @adr 0012 """',
+    ];
+
+    for (const line of lines) {
+      expect([line, refsOf(line, 'docs/guide.md')]).toEqual([line, []]);
+      // Control: each one is a declaration in a file whose language uses it.
+      expect([line, refsOf(line, 'src/sync.ts')]).toEqual([line, ['0012']]);
+    }
+  });
+
+  test('the extension test is case-insensitive and covers the markdown dialects', () => {
+    for (const path of ['README.MD', 'notes.markdown', 'site/docs/commands.MDX']) {
+      expect([path, refsOf('# @adr 0012', path)]).toEqual([path, []]);
+    }
+  });
+
+  test('a JSX expression comment declares, closing one recorded false negative', () => {
+    // ADR-0021 recorded `{/* @adr 0021 */}` as a form that could not declare. Markdown
+    // needs it — MDX rejects `<!-- -->` — so it is answered for every file at once
+    // rather than only where this change forced the question.
+    expect(refsOf('{/* @adr 0012 */}', 'src/App.tsx')).toEqual(['0012']);
+  });
+});
+
 describe('scanSourceMarkers — reference list grammar', () => {
   test('a comma continues the list', () => {
     expect(refsOf('// @adr 0012, 0013')).toEqual(['0012', '0013']);
@@ -265,6 +384,43 @@ describe('readSourceMarkers', () => {
 
     expect(scan.truncated).toBe(true);
     expect(scan.markers).toEqual([]);
+  });
+});
+
+/**
+ * The reproduction from issue #101, run against the real files rather than a fixture.
+ * A fixture would prove the rule; only the repository's own documentation proves the
+ * three reported instances are gone. If a marker is ever added to one of these files
+ * on purpose, this test is where that shows up.
+ */
+describe('readSourceMarkers — this repository stops declaring from its own docs', () => {
+  const REPORTED_IN_ISSUE_101 = [
+    'packages/cli/README.md',
+    'docs/adr/0021-resolve-inbound-source-annotations-without-changing-the-schema.md',
+    'site/src/content/docs/commands.mdx',
+  ];
+
+  test('the three documentation files reported no longer declare a decision', async () => {
+    for (const path of REPORTED_IN_ISSUE_101) {
+      const scan = await readSourceMarkers(path, process.cwd());
+      // `scanned` and not `absent`: the tool looked at the real file and found none.
+      expect([path, scan.state, scan.markers]).toEqual([path, 'scanned', []]);
+    }
+  });
+
+  test('the repository still has a real declaration, so the scan is not simply blind', async () => {
+    const scan = await readSourceMarkers('packages/core/src/check/index.ts', process.cwd());
+
+    // The *location* is asserted and the ref deliberately is not: #106 renumbers this
+    // marker from 0021 to 0022 when ADR-0022 lands, and pinning the id here would make
+    // this file fail on a change that has nothing to do with it. What has to stay true
+    // is that one real declaration survives, or the empty results above prove nothing.
+    expect(scan.state).toBe('scanned');
+    expect(scan.markers).toHaveLength(1);
+    expect({ path: scan.markers[0]?.path, line: scan.markers[0]?.line }).toEqual({
+      path: 'packages/core/src/check/index.ts',
+      line: 1,
+    });
   });
 });
 

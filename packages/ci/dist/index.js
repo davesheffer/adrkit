@@ -48103,7 +48103,26 @@ function resolveAffects(input) {
 // ../core/src/markers/scan.ts
 var MARKER_HEADER_WINDOW_BYTES = 8192;
 var MARKER_TOKEN = "@adr";
-var COMMENT_INTRODUCERS = ["//", "/*", "*", "#", "--", ";", "%", "<!--", '"""', "'''"];
+var COMMENT_INTRODUCERS = [
+  "//",
+  "/*",
+  "{/*",
+  "*",
+  "#",
+  "--",
+  ";",
+  "%",
+  "<!--",
+  '"""',
+  "'''"
+];
+var MARKDOWN_COMMENT_INTRODUCERS = ["{/*", "<!--"];
+var MARKDOWN_EXTENSIONS = [".md", ".mdx", ".markdown"];
+function isMarkdownPath(path) {
+  const lower = path.toLowerCase();
+  return MARKDOWN_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+var FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 function isRefChar(char) {
   return /[0-9A-Za-z:-]/.test(char);
 }
@@ -48115,11 +48134,11 @@ function completeLinePrefix(source) {
 `), source.lastIndexOf("\r"));
   return lastNewline === -1 ? "" : source.slice(0, lastNewline + 1);
 }
-function dedicatedMarkerIndex(line, firstLine) {
-  let commentStart = firstLine && line.charCodeAt(0) === 65279 ? 1 : 0;
+function dedicatedMarkerIndex(line, introducers) {
+  let commentStart = 0;
   while (commentStart < line.length && isSpace(line[commentStart] ?? ""))
     commentStart += 1;
-  for (const introducer of COMMENT_INTRODUCERS) {
+  for (const introducer of introducers) {
     if (!line.startsWith(introducer, commentStart))
       continue;
     let markerStart = commentStart + introducer.length;
@@ -48155,12 +48174,30 @@ function readRefs(rest) {
 }
 function scanWindow(window, path) {
   const markers = [];
+  const introducers = isMarkdownPath(path) ? MARKDOWN_COMMENT_INTRODUCERS : COMMENT_INTRODUCERS;
+  let fence = null;
   const lines = window.text.split(/\r\n|[\r\n]/);
   for (const [index, line] of lines.entries()) {
-    const markerStart = dedicatedMarkerIndex(line, index === 0);
+    const content = index === 0 && line.charCodeAt(0) === 65279 ? line.slice(1) : line;
+    const fenceMatch = FENCE_LINE.exec(content);
+    if (fenceMatch) {
+      const char = fenceMatch[1][0];
+      const length = fenceMatch[1].length;
+      const info2 = fenceMatch[2];
+      if (fence) {
+        if (char === fence.char && length >= fence.length && info2.trim() === "")
+          fence = null;
+      } else if (!(char === "`" && info2.includes("`"))) {
+        fence = { char, length };
+      }
+      continue;
+    }
+    if (fence)
+      continue;
+    const markerStart = dedicatedMarkerIndex(content, introducers);
     if (markerStart === undefined)
       continue;
-    for (const ref of readRefs(line.slice(markerStart + MARKER_TOKEN.length))) {
+    for (const ref of readRefs(content.slice(markerStart + MARKER_TOKEN.length))) {
       const { id, log } = parseAdrRef(ref);
       markers.push({ path, ref, id, ...log ? { log } : {}, line: index + 1 });
     }

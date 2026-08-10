@@ -42,7 +42,17 @@ Two properties are load-bearing and easy to break:
 - **A marker must not be able to lie.** The scanner requires the comment
   introducer to begin the physical line with `@adr` as the comment's first
   content, so prose discussing a decision, a string literal containing one, and
-  a trailing `} // @adr 0012` are all rejected. Truncation uses the byte count
+  a trailing `} // @adr 0012` are all rejected. Two further rules narrow that to
+  lines the file's own format hides
+  ([ADR-0023](./docs/adr/0023-read-a-marker-only-where-the-format-hides-it-fences-and-markdown-prose.md),
+  [#101](https://github.com/mbeacom/adrkit/issues/101)): a line inside a ` ``` `
+  or `~~~` fence is an example rather than a declaration, and in
+  `.md`/`.mdx`/`.markdown` the only introducers are `<!--` and `{/*`, because `#`
+  and `*` are markdown's heading and bullet rather than comments. Both are
+  line-lead rules, and both only ever remove a declaration — the one addition is
+  `{/*`, which previously could not declare anywhere. `path` consequently selects
+  the introducer set, so the pure scanner's result is no longer a function of the
+  text alone. Truncation uses the byte count
   `read.ts` observed rather than re-deriving it from decoded text, because
   `TextDecoder` drops a BOM and expands invalid bytes, and a re-derived window
   can sever a reference mid-token and report a record the file never named.
