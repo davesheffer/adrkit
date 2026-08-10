@@ -9,7 +9,7 @@ tags: [core, matching, governance, agents, docs]
 scope: component
 reversibility: two-way-door
 blastRadius: component
-relatesTo: ["0016", "0021"]
+relatesTo: ["0016", "0021", "0022"]
 affects:
   - type: path
     pattern: "packages/core/src/markers/**"

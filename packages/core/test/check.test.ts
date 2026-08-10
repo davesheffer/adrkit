@@ -1,8 +1,38 @@
 import { describe, expect, test } from 'bun:test';
 import { checkChanges, type CheckLintResult } from '../src/check/index.ts';
+import type { SourceMarkerScan } from '../src/markers/read.ts';
+import type { Adr } from '../src/schema/adr.schema.ts';
 import type { Finding } from '../src/validate/findings.ts';
 
 const emptyLint = (findings: Finding[] = []): CheckLintResult => ({ records: [], findings, checked: 0 });
+
+function record(id: string): Adr {
+  return {
+    frontmatter: {
+      schemaVersion: '0.1.0',
+      id,
+      title: `Use decision ${id}`,
+      status: 'accepted',
+      date: '2026-08-08',
+      deciders: ['@tester'],
+      consulted: [],
+      informed: [],
+      tags: [],
+      scope: 'component',
+      reversibility: 'unknown',
+      blastRadius: 'component',
+      supersedes: [],
+      relatesTo: [],
+      conflictsWith: [],
+      affects: [],
+      assertions: [],
+      externalRefs: [],
+      complianceControls: [],
+    } as unknown as Adr['frontmatter'],
+    body: '',
+    path: `docs/adr/${id}-decision.md`,
+  };
+}
 
 describe('checkChanges (core)', () => {
   test('an error finding on a changed record fails even when the file was dropped from records (RC3)', () => {
@@ -97,5 +127,100 @@ describe('checkChanges (core)', () => {
     });
     expect(outcome.changedFiles).toEqual(['docs/adr/0001-x.md']);
     expect(outcome.changedRecords).toEqual(['docs/adr/0001-x.md']);
+  });
+
+  test('resolves pre-scanned markers without performing I/O and reports scan state', () => {
+    const lint: CheckLintResult = { records: [record('0012')], findings: [], checked: 1 };
+    const outcome = checkChanges({
+      lint,
+      changedFiles: ['src/sync.ts'],
+      markerScans: {
+        scans: [
+          {
+            path: 'src/sync.ts',
+            state: 'scanned',
+            truncated: false,
+            markers: [{ path: 'src/sync.ts', ref: '0012', id: '0012', line: 1 }],
+          },
+          { path: 'src/deleted.ts', state: 'absent', truncated: false, markers: [] },
+        ],
+        skippedPaths: [],
+        limit: 1000,
+        totalCandidates: 2,
+      },
+    });
+
+    expect(outcome.governing[0]?.declaredBy).toEqual([
+      { path: 'src/sync.ts', line: 1, ref: '0012' },
+    ]);
+    expect(outcome.markerScan?.counts).toEqual({
+      scanned: 1,
+      absent: 1,
+      unreadable: 0,
+      'out-of-tree': 0,
+      truncated: 0,
+      skipped: 0,
+    });
+    expect(outcome.markerScan?.absentPaths).toEqual(['src/deleted.ts']);
+    expect(outcome.ok).toBe(true);
+  });
+
+  test('a capped marker scan is an observable warning but never changes ok', () => {
+    const outcome = checkChanges({
+      lint: emptyLint(),
+      changedFiles: ['src/a.ts', 'src/z.ts'],
+      markerScans: {
+        scans: [{ path: 'src/a.ts', state: 'absent', truncated: false, markers: [] }],
+        skippedPaths: ['src/z.ts'],
+        limit: 1,
+        totalCandidates: 2,
+      },
+    });
+
+    expect(outcome.findings.map((finding) => [finding.rule, finding.severity])).toContainEqual([
+      'marker-scan-capped',
+      'warn',
+    ]);
+    expect(outcome.markerScan?.skippedPaths).toEqual(['src/z.ts']);
+    expect(outcome.ok).toBe(true);
+  });
+
+  test('marker scan report paths use deterministic code-unit order', () => {
+    const states = ['absent', 'unreadable', 'out-of-tree'] as const;
+    const scans: SourceMarkerScan[] = states.flatMap((state) => [
+      { path: `src/ä-${state}.ts`, state, truncated: false, markers: [] },
+      { path: `src/b-${state}.ts`, state, truncated: false, markers: [] },
+    ]);
+    scans.push(
+      { path: 'src/ä-truncated.ts', state: 'scanned', truncated: true, markers: [] },
+      { path: 'src/b-truncated.ts', state: 'scanned', truncated: true, markers: [] },
+    );
+
+    const outcome = checkChanges({
+      lint: emptyLint(),
+      changedFiles: [],
+      markerScans: {
+        scans,
+        skippedPaths: ['src/ä-skipped.ts', 'src/b-skipped.ts'],
+        limit: 8,
+        totalCandidates: 10,
+      },
+    });
+
+    expect(outcome.markerScan?.absentPaths).toEqual(['src/b-absent.ts', 'src/ä-absent.ts']);
+    expect(outcome.markerScan?.unreadablePaths).toEqual([
+      'src/b-unreadable.ts',
+      'src/ä-unreadable.ts',
+    ]);
+    expect(outcome.markerScan?.outOfTreePaths).toEqual([
+      'src/b-out-of-tree.ts',
+      'src/ä-out-of-tree.ts',
+    ]);
+    expect(outcome.markerScan?.truncatedPaths).toEqual([
+      'src/b-truncated.ts',
+      'src/ä-truncated.ts',
+    ]);
+    expect(outcome.markerScan?.counts.truncated).toBe(2);
+    expect(outcome.markerScan?.skippedPaths).toEqual(['src/b-skipped.ts', 'src/ä-skipped.ts']);
   });
 });
