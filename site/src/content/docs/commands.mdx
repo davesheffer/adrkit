@@ -126,9 +126,20 @@ export function syncOnce() { … }
   `@adr 0012, 0013`. A bare space ends it, so `@adr 0012 1234567` is one
   declaration followed by a number, not two declarations.
 - **Any language.** adrkit does not parse your file. A marker must be on its own
-  comment line: after optional whitespace, one of `//`, `/*`, `*`, `#`, `--`,
-  `;`, `%`, `<!--`, `"""`, `'''` begins the line and `@adr` is the comment's first
-  content. A trailing `} // @adr 0012` does not declare the file.
+  comment line: after optional whitespace, one of `//`, `/*`, `{/*`, `*`, `#`,
+  `--`, `;`, `%`, `<!--`, `"""`, `'''` begins the line and `@adr` is the comment's
+  first content. A trailing `} // @adr 0012` does not declare the file.
+- **Not inside a fenced block.** A marker between backtick or tilde fences is an
+  example of the syntax rather than a use of it, so documenting the feature does
+  not make your documentation governed by the decision you used as the example. A
+  fence closes only on a line of at least as many of the same character and
+  nothing else, and an unclosed fence runs to the end of the scanned window
+  ([ADR-0023](https://github.com/mbeacom/adrkit/blob/main/docs/adr/0023-read-a-marker-only-where-the-format-hides-it-fences-and-markdown-prose.md)).
+- **In markdown, use a markdown comment.** In `.md`, `.mdx`, and `.markdown`
+  only `<!--` and `{/*` declare. `#` is a heading and `*` is a list bullet: they
+  render, so they are content rather than comments, and `# @adr 0012` does not
+  declare the file. Every other introducer above belongs to a source language and
+  is ignored there.
 - **Only the first 8192 bytes** of a file are scanned. A marker is a claim that
   the file lives under a decision; a mention far down the file is prose about
   that decision.

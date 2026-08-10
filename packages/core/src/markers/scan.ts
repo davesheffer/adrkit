@@ -2,7 +2,8 @@
  * @adrkit/core — the `@adr <ref>` source-marker scanner.
  *
  * Pure text in, markers out. No filesystem, no clock, no per-language parser: the
- * marker is the first content on a dedicated comment line.
+ * marker is the first content on a dedicated comment line, that line is not inside a
+ * fenced block, and in a markdown file the introducer is one markdown actually hides.
  */
 
 import { AdrRef } from '../schema/adr.schema.ts';
@@ -33,7 +34,74 @@ const MARKER_TOKEN = '@adr';
  * `log("// @adr 0012")` must not either. The cost is intentional: a trailing
  * `} // @adr 0012` is not a file-level declaration.
  */
-const COMMENT_INTRODUCERS = ['//', '/*', '*', '#', '--', ';', '%', '<!--', '"""', "'''"] as const;
+const COMMENT_INTRODUCERS = [
+  '//',
+  '/*',
+  '{/*',
+  '*',
+  '#',
+  '--',
+  ';',
+  '%',
+  '<!--',
+  '"""',
+  "'''",
+] as const;
+
+/**
+ * Markdown's comment syntax, and all of it.
+ *
+ * The list above is a union of what *source languages* use to hide a line from their
+ * own output. Markdown is not one of them: `#` opens a heading, `*` and `-` open list
+ * items, and every one of those renders. Lending markdown the source-language set is
+ * what let `* @adr 0012 explains this` — a sentence a reader can see — declare a
+ * decision, which is the same defect class as a fenced example and not a different
+ * rule. What markdown genuinely hides is an HTML comment; the `{/*` expression comment
+ * is MDX's, and MDX rejects `<!-- -->` outright, so without it that dialect would have
+ * no way to declare at all.
+ *
+ * This is a subset of the introducers above, chosen by file extension. It is a
+ * statement about which constructs are comments in a format, not a parse of its
+ * content: no line is read differently, only fewer line-leads count.
+ */
+const MARKDOWN_COMMENT_INTRODUCERS = ['{/*', '<!--'] as const;
+
+/** Extensions whose comment syntax is markdown's rather than a source language's. */
+const MARKDOWN_EXTENSIONS = ['.md', '.mdx', '.markdown'] as const;
+
+function isMarkdownPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return MARKDOWN_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+/**
+ * A fenced block is where a file *shows* the marker syntax, so a marker inside one is
+ * an example rather than a declaration. Three of the four marker-looking lines left in
+ * this repository after the dedicated-line rule landed were exactly that: documentation
+ * of the feature, claiming to live under the decision it was illustrating.
+ *
+ * CommonMark-lite, and deliberately still a line-lead rule rather than a parser. A
+ * fence is a run of three or more backticks or tildes as the line's first content
+ * (after at most three spaces). It closes only on a line of at least as many of the
+ * *same* character and nothing else, so a longer fence closes a shorter one and never
+ * the reverse, and ``` and ~~~ do not close each other. A backtick fence's info string
+ * may not itself contain a backtick. An unclosed fence runs to the end of the window,
+ * which is what stops an example at the end of a file from un-fencing everything above
+ * it.
+ *
+ * The fence must lead the physical line for the same reason the marker must: that is
+ * the one thing this scanner can know without knowing the language. A fence nested
+ * inside a block-comment continuation (` * ``` `) is therefore not detected, and is
+ * recorded as a known cost rather than chased with a parser.
+ */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+interface OpenFence {
+  /** The fence character, ` or ~. The other one cannot close it. */
+  char: string;
+  /** The opening run's length. A closer must be at least this long. */
+  length: number;
+}
 
 /** Characters that can appear inside an `AdrRef` — digits, ULID letters, `-`, and the log `:`. */
 function isRefChar(char: string): boolean {
@@ -72,13 +140,11 @@ export function headerWindow(source: string): HeaderWindow {
   return { text: completeLinePrefix(text), truncated: true };
 }
 
-function dedicatedMarkerIndex(line: string, firstLine: boolean): number | undefined {
-  // A decoded UTF-8 BOM is metadata, not comment content. `TextDecoder` removes it
-  // for the filesystem path; accepting it here keeps the pure string API equivalent.
-  let commentStart = firstLine && line.charCodeAt(0) === 0xfeff ? 1 : 0;
+function dedicatedMarkerIndex(line: string, introducers: readonly string[]): number | undefined {
+  let commentStart = 0;
   while (commentStart < line.length && isSpace(line[commentStart] ?? '')) commentStart += 1;
 
-  for (const introducer of COMMENT_INTRODUCERS) {
+  for (const introducer of introducers) {
     if (!line.startsWith(introducer, commentStart)) continue;
     let markerStart = commentStart + introducer.length;
     while (markerStart < line.length && isSpace(line[markerStart] ?? '')) markerStart += 1;
@@ -126,13 +192,35 @@ export interface ScanSourceMarkersResult {
 
 function scanWindow(window: HeaderWindow, path: string): ScanSourceMarkersResult {
   const markers: SourceMarker[] = [];
+  const introducers = isMarkdownPath(path) ? MARKDOWN_COMMENT_INTRODUCERS : COMMENT_INTRODUCERS;
 
+  let fence: OpenFence | null = null;
   const lines = window.text.split(/\r\n|[\r\n]/);
   for (const [index, line] of lines.entries()) {
-    const markerStart = dedicatedMarkerIndex(line, index === 0);
+    // A decoded UTF-8 BOM is metadata, not content. `TextDecoder` removes it for the
+    // filesystem path; removing it here keeps the pure string API equivalent, and does
+    // so before the fence test so it cannot hide an opening fence either.
+    const content = index === 0 && line.charCodeAt(0) === 0xfeff ? line.slice(1) : line;
+
+    const fenceMatch = FENCE_LINE.exec(content);
+    if (fenceMatch) {
+      const char = fenceMatch[1]![0]!;
+      const length = fenceMatch[1]!.length;
+      const info = fenceMatch[2]!;
+      if (fence) {
+        if (char === fence.char && length >= fence.length && info.trim() === '') fence = null;
+      } else if (!(char === '`' && info.includes('`'))) {
+        fence = { char, length };
+      }
+      continue;
+    }
+    // Inside a fence the file is showing the syntax, not using it.
+    if (fence) continue;
+
+    const markerStart = dedicatedMarkerIndex(content, introducers);
     if (markerStart === undefined) continue;
 
-    for (const ref of readRefs(line.slice(markerStart + MARKER_TOKEN.length))) {
+    for (const ref of readRefs(content.slice(markerStart + MARKER_TOKEN.length))) {
       const { id, log } = parseAdrRef(ref);
       markers.push({ path, ref, id, ...(log ? { log } : {}), line: index + 1 });
     }
@@ -160,7 +248,9 @@ export function scanBoundedSourceMarkerWindow(
  * Every `@adr <ref>` marker in a source's header window, in the order they appear.
  *
  * `path` is echoed onto each marker verbatim — the caller owns the repo-relative,
- * forward-slash form, because it is the string the user will read back.
+ * forward-slash form, because it is the string the user will read back. Its extension
+ * also selects the introducer set, since `#` is a comment in a shell script and a
+ * heading in markdown; nothing else about the scan depends on it.
  */
 export function scanSourceMarkers(source: string, path: string): ScanSourceMarkersResult {
   return scanWindow(headerWindow(source), path);

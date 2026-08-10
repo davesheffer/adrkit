@@ -9,6 +9,39 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fenced documentation example no longer declares the decision it
+  illustrates.** `@adr` markers are now skipped inside ` ``` ` and `~~~` fenced
+  blocks. Three files in this repository — `packages/cli/README.md`,
+  `docs/adr/0021-*.md`, and `site/src/content/docs/commands.mdx` — documented the
+  marker syntax and were read as *using* it, so `adr explain packages/cli/README.md`
+  reported ADR-0012 as an `accepted` decision governing the CLI README. Fence
+  tracking is CommonMark-lite and still line-lead only: a closer must be at least
+  as long as its opener and carry nothing else, backtick and tilde fences do not
+  close each other, and an unclosed fence runs to the end of the scanned window
+  ([#101](https://github.com/mbeacom/adrkit/issues/101),
+  [ADR-0023](docs/adr/0023-read-a-marker-only-where-the-format-hides-it-fences-and-markdown-prose.md)).
+
+- **A markdown heading or list bullet no longer declares.** In `.md`, `.mdx`, and
+  `.markdown` the introducers are now `<!--` and `{/*` only. `#` opens a heading
+  and `*` opens a list item in markdown — both render, so `* @adr 0012 explains
+  this` was a visible sentence claiming a decision governs the file. The other
+  introducers are source-language comment syntax and are ignored in markdown.
+
+### Added
+
+- **`{/*` is accepted as a comment introducer.** MDX rejects `<!-- -->`, so the
+  markdown rule above would otherwise leave that dialect unable to declare at
+  all. This also closes one of the two false negatives ADR-0021 recorded: a JSX
+  expression comment now declares in `.tsx` as well.
+
+### Changed
+
+- **`scanSourceMarkers(source, path)` now depends on `path`.** Its extension
+  selects the introducer set, so two files with identical bytes and different
+  extensions can scan differently. The function remains pure and filesystem-free.
+
 ## [0.4.0] - 2026-08-08
 
 ### Added

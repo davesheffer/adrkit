@@ -47,7 +47,11 @@ Decisions governing src/services/sync/retry.ts:
 This lets `affects` stay narrow — the *defining* files — while the surrounding
 neighbourhood opts in one line at a time. Only the first 8192 bytes of a file
 are scanned, in any language, and the marker must be the first content on a
-dedicated comment line. Nothing is written back to the record. In
+dedicated comment line that is not inside a ` ``` ` or `~~~` fence — so
+documenting the syntax, as this file does above, is not declaring it. In a
+markdown file (`.md`, `.mdx`, `.markdown`) the comment is `<!--` or `{/*`; `#`
+and `*` are a heading and a bullet there, and do not declare. Nothing is written
+back to the record. In
 `--json`, pattern matches carry `firedMatchers` and file declarations carry
 `declaredBy`, and a `markers` block reports whether the file was actually read.
 See [the commands reference](https://adrkit.dev/docs/commands/#inbound-adr-markers).

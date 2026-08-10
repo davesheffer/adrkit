@@ -51,7 +51,12 @@ are unaffected.
 filesystem — bounded to the first `MARKER_HEADER_WINDOW_BYTES` (8192) of the
 source and reporting `truncated` when it stopped short. Markers must be the first
 content on a dedicated comment line, which keeps documentation prose and string
-literals in their common inline forms from becoming declarations.
+literals in their common inline forms from becoming declarations. A line inside a
+` ``` ` or `~~~` fence is an example rather than a declaration, and `path`
+selects the introducer set: a markdown extension (`.md`, `.mdx`, `.markdown`)
+accepts only `<!--` and `{/*`, because `#` and `*` are markdown's own heading and
+list syntax. Two files with identical bytes and different extensions can
+therefore scan differently.
 `readSourceMarkers` wraps the scanner with a bounded read and reports `state` as
 `scanned`, `absent`,
 `unreadable`, or `out-of-tree`, so "found no markers" is never confused with
