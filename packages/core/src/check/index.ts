@@ -122,7 +122,7 @@ function isCorpusRecordPath(file: string, dir: string): boolean {
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 
 function markerScanReport(batch: SourceMarkerBatchScan): MarkerScanReport {
