@@ -14,6 +14,14 @@ export interface ExtractedChanges {
   /** Complete, deduplicated, sorted repo-relative changed-file list (base…head). */
   changedFiles: string[];
   /**
+   * Current/head-side paths whose contents can carry inbound markers.
+   *
+   * Unlike `changedFiles`, this excludes removed files and a rename's previous path:
+   * those paths still participate in `affects` matching, but no longer exist in the
+   * checkout and must not consume the marker scanner's provider-aligned slots.
+   */
+  markerFiles: string[];
+  /**
    * Changed dependencies for `package` matchers, or `undefined` when a changed
    * lockfile's diff could not be obtained (so package matchers go inert with the
    * required info finding, rather than falsely resolving to "nothing changed").
@@ -71,7 +79,10 @@ export async function extractChanges(client: GitHubClient): Promise<ExtractedCha
   const truncated = files.length >= LIST_FILES_CAP;
 
   const changedFiles = [...new Set(files.flatMap(pathsForFile))].sort((a, b) => a.localeCompare(b));
+  const markerFiles = [
+    ...new Set(files.filter((file) => file.status !== 'removed').map((file) => file.filename)),
+  ].sort((a, b) => a.localeCompare(b));
   const changedDependencies = deriveChangedDependencies(files);
 
-  return { changedFiles, changedDependencies, truncated };
+  return { changedFiles, markerFiles, changedDependencies, truncated };
 }

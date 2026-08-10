@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdir, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { MARKER_HEADER_WINDOW_BYTES, readSourceMarkers, scanSourceMarkers } from '../src/markers/index.ts';
+import { join, sep } from 'node:path';
+import {
+  MARKER_HEADER_WINDOW_BYTES,
+  MARKER_SCAN_FILE_CAP,
+  readSourceMarkers,
+  readSourceMarkersBatch,
+  scanSourceMarkers,
+} from '../src/markers/index.ts';
 import { cleanupTestDir, resetTestDir, writeText } from './helpers.ts';
 
 const DIR_NAME = 'core-markers-scan';
@@ -236,6 +242,30 @@ describe('readSourceMarkers', () => {
     expect(scan.truncated).toBe(false);
     expect(scan.markers.map((item) => item.ref)).toEqual(['0012']);
   });
+
+  test('a multi-byte code point split at the byte window cannot invent a marker', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const markerPrefix = new TextEncoder().encode(`${MARKER_LINE} `);
+    const splitCodePoint = new TextEncoder().encode('é');
+    const padLength = MARKER_HEADER_WINDOW_BYTES - markerPrefix.length - 1;
+    const pad = new TextEncoder().encode(`${'#'.repeat(padLength - 1)}\n`);
+    const tail = new TextEncoder().encode('\ntail\n');
+    const bytes = new Uint8Array(pad.length + markerPrefix.length + splitCodePoint.length + tail.length);
+    bytes.set(pad);
+    bytes.set(markerPrefix, pad.length);
+    bytes.set(splitCodePoint, pad.length + markerPrefix.length);
+    bytes.set(tail, pad.length + markerPrefix.length + splitCodePoint.length);
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src/split.ts'), bytes);
+
+    // The window ends after the first byte of `é`. TextDecoder emits U+FFFD, but the
+    // whole severed line must be discarded; otherwise its valid marker prefix matches.
+    expect(pad.length + markerPrefix.length + 1).toBe(MARKER_HEADER_WINDOW_BYTES);
+    const scan = await readSourceMarkers('src/split.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.markers).toEqual([]);
+  });
 });
 
 /**
@@ -270,7 +300,7 @@ describe('readSourceMarkers — the working tree is the boundary', () => {
     expect([scan.state, scan.markers]).toEqual(['out-of-tree', []]);
   });
 
-  test('refuses a symlink inside the tree whose target is outside it', async () => {
+  test('refuses an out-of-tree symlink without resolving its target', async () => {
     const root = await resetTestDir(DIR_NAME);
     const outside = await resetTestDir(OUTSIDE_DIR_NAME);
     await writeText(join(outside, 'claim.ts'), '// @adr 0012\n');
@@ -281,17 +311,40 @@ describe('readSourceMarkers — the working tree is the boundary', () => {
     // the argument without resolving it would report this file as governed.
     const scan = await readSourceMarkers('src/linked.ts', root);
 
-    expect([scan.state, scan.markers]).toEqual(['out-of-tree', []]);
+    expect([scan.state, scan.markers]).toEqual(['unreadable', []]);
   });
 
-  test('follows a symlink that stays inside the tree', async () => {
+  test('refuses an in-tree symlink with the same state', async () => {
     const root = await resetTestDir(DIR_NAME);
     await writeText(join(root, 'src/sync.ts'), '// @adr 0012\n');
     await symlink(join(root, 'src/sync.ts'), join(root, 'src/alias.ts'));
 
     const scan = await readSourceMarkers('src/alias.ts', root);
 
-    expect([scan.state, scan.markers.map((marker) => marker.ref)]).toEqual(['scanned', ['0012']]);
+    expect([scan.state, scan.markers]).toEqual(['unreadable', []]);
+  });
+
+  test('refuses a broken symlink with the same state', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await mkdir(join(root, 'src'), { recursive: true });
+    await symlink(join(root, 'src/missing.ts'), join(root, 'src/alias.ts'));
+
+    const scan = await readSourceMarkers('src/alias.ts', root);
+
+    expect([scan.state, scan.markers]).toEqual(['unreadable', []]);
+  });
+
+  test('refuses a symlinked parent before probing existing or missing children', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const outside = await resetTestDir(OUTSIDE_DIR_NAME);
+    await writeText(join(outside, 'exists.ts'), '// @adr 0012\n');
+    await symlink(outside, join(root, 'linked'));
+
+    const existing = await readSourceMarkers('linked/exists.ts', root);
+    const missing = await readSourceMarkers('linked/missing.ts', root);
+
+    expect([existing.state, missing.state]).toEqual(['unreadable', 'unreadable']);
+    expect([existing.markers, missing.markers]).toEqual([[], []]);
   });
 
   test.skipIf(process.platform === 'win32')(
@@ -309,4 +362,58 @@ describe('readSourceMarkers — the working tree is the boundary', () => {
       expect([scan.state, scan.markers]).toEqual(['unreadable', []]);
     },
   );
+});
+
+describe('readSourceMarkersBatch', () => {
+  test('normalizes, deduplicates, and sorts paths before scanning', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(join(root, 'src/a.ts'), '// @adr 0012\n');
+    await writeText(join(root, 'src/b.ts'), '// @adr 0013\n');
+
+    const batch = await readSourceMarkersBatch(
+      ['./src/b.ts', './src/a.ts', 'src/a.ts', '././src/b.ts'],
+      root,
+    );
+
+    expect(batch.scans.map((scan) => scan.path)).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(batch.scans.flatMap((scan) => scan.markers.map((marker) => marker.path))).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
+    expect(batch.totalCandidates).toBe(2);
+    expect(batch.skippedPaths).toEqual([]);
+  });
+
+  test.skipIf(sep === '\\')(
+    'treats a backslash as a filename character where the platform does, not a separator',
+    async () => {
+      const root = await resetTestDir(DIR_NAME);
+      // Two distinct POSIX files. Rewriting the backslash would scan the second and
+      // report its marker under the first's name — a wrong answer that reads as
+      // `scanned`, not `absent`.
+      await writeText(join(root, 'src/we\\ird.ts'), 'export const plain = true;\n');
+      await writeText(join(root, 'src/we/ird.ts'), '// @adr 0012\n');
+
+      const batch = await readSourceMarkersBatch(['src/we\\ird.ts'], root);
+
+      expect(batch.scans).toEqual([
+        { path: 'src/we\\ird.ts', state: 'scanned', markers: [], truncated: false },
+      ]);
+    },
+  );
+
+  test('uses code-unit order to select capped paths and report every path beyond the cap', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const name = (index: number): string => `src/file-${String(index).padStart(5, '0')}.ts`;
+    const selectedNames = Array.from({ length: MARKER_SCAN_FILE_CAP }, (_, index) => name(index));
+    const paths = [...selectedNames, 'src/z-last.ts', 'src/ä-last.ts'].reverse();
+
+    const batch = await readSourceMarkersBatch(paths, root);
+
+    expect(batch.scans).toHaveLength(MARKER_SCAN_FILE_CAP);
+    expect(batch.scans.every((scan) => scan.state === 'absent')).toBe(true);
+    expect(batch.scans.map((scan) => scan.path)).toEqual(selectedNames);
+    expect(batch.skippedPaths).toEqual(['src/z-last.ts', 'src/ä-last.ts']);
+    expect(batch.totalCandidates).toBe(MARKER_SCAN_FILE_CAP + 2);
+  });
 });

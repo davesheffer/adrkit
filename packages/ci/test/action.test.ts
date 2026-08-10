@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { lintCorpus } from '@adrkit/core';
+import { lintCorpus, readSourceMarkersBatch } from '@adrkit/core';
 import { acceptedRecordMarkdown, cleanupTestDir, resetTestDir, writeText } from '../../core/test/helpers.ts';
 import { runAction, type ActionDeps } from '../src/action.ts';
 import { CI_COMMENT_MARKER } from '../src/comment.ts';
@@ -18,7 +19,13 @@ function deps(client: GitHubClient, root: string, changedFiles: string[]): Actio
     client,
     dir: 'docs/adr',
     loadLint: (dir) => lintCorpus({ cwd: root, dir }),
-    extract: async () => ({ changedFiles, changedDependencies: [], truncated: false }),
+    readMarkers: (paths) => readSourceMarkersBatch(paths, root),
+    extract: async () => ({
+      changedFiles,
+      markerFiles: changedFiles,
+      changedDependencies: [],
+      truncated: false,
+    }),
     log: makeLogger().log,
   };
 }
@@ -74,7 +81,15 @@ describe('runAction (end to end with a fake client)', () => {
       loadLint: async () => {
         throw new Error('lint must not run on a truncated diff');
       },
-      extract: async () => ({ changedFiles: ['a.ts'], changedDependencies: [], truncated: true }),
+      readMarkers: async () => {
+        throw new Error('markers must not be read on a truncated diff');
+      },
+      extract: async () => ({
+        changedFiles: ['a.ts'],
+        markerFiles: ['a.ts'],
+        changedDependencies: [],
+        truncated: true,
+      }),
       log: logger.log,
     });
 
@@ -84,5 +99,104 @@ describe('runAction (end to end with a fake client)', () => {
     expect(client.created).toHaveLength(1);
     expect(client.created[0]).toContain('more files than the GitHub API can list');
     expect(logger.warning.join('\n')).toContain('exceeded the provider cap');
+  });
+
+  test('renders marker-only governance distinctly and logs the aggregate scan states', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(
+      join(root, 'docs/adr/0001-core.md'),
+      acceptedRecordMarkdown('0001', 'Guard marker-owned code'),
+    );
+    await writeText(
+      join(root, 'src/owned.ts'),
+      `// @adr 0001\nexport const owned = true;\n${'x'.repeat(8192)}`,
+    );
+    const client = makeFakeClient();
+    const logger = makeLogger();
+    const actionDeps = deps(client, root, ['src/owned.ts', 'src/deleted.ts']);
+    actionDeps.log = logger.log;
+
+    const result = await runAction(actionDeps);
+
+    expect(result.failed).toBe(false);
+    expect(client.created[0]).toContain('**0001** — Guard marker-owned code');
+    expect(client.created[0]).toContain('declared by `src/owned.ts:1` (`@adr 0001`)');
+    expect(logger.info.join('\n')).toContain(
+      'marker scan: 1 scanned, 1 absent, 0 unreadable, 0 out-of-tree, 1 truncated, 0 skipped',
+    );
+  });
+
+  test('scans only the current side of a rename while matching affects against both paths', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(
+      join(root, 'docs/adr/0001-core.md'),
+      withPathMatcher(acceptedRecordMarkdown('0001', 'Guard the former path'), 'src/old.ts'),
+    );
+    const client = makeFakeClient();
+    const scanned: string[][] = [];
+
+    const result = await runAction({
+      client,
+      dir: 'docs/adr',
+      loadLint: (dir) => lintCorpus({ cwd: root, dir }),
+      readMarkers: async (paths) => {
+        scanned.push([...paths]);
+        return { scans: [], skippedPaths: [], limit: 3000, totalCandidates: paths.length };
+      },
+      extract: async () => ({
+        changedFiles: ['src/new.ts', 'src/old.ts'],
+        markerFiles: ['src/new.ts'],
+        changedDependencies: [],
+        truncated: false,
+      }),
+      log: makeLogger().log,
+    });
+
+    expect(scanned).toEqual([['src/new.ts']]);
+    expect(result.outcome?.governing.map((decision) => decision.recordId)).toEqual(['0001']);
+  });
+
+  test('keeps dangling markers non-failing and out of the focused PR comment', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await mkdir(join(root, 'docs/adr'), { recursive: true });
+    await writeText(join(root, 'src/dangling.ts'), '// @adr 9999\n');
+    const client = makeFakeClient();
+
+    const result = await runAction(deps(client, root, ['src/dangling.ts']));
+
+    expect(result.failed).toBe(false);
+    expect(result.outcome?.ok).toBe(true);
+    expect(result.outcome?.findings.map((finding) => finding.rule)).toContain('dangling-marker');
+    expect(client.created[0]).not.toContain('dangling-marker');
+  });
+
+  test('warns with the exact skipped paths when the marker scan cap is reached', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await mkdir(join(root, 'docs/adr'), { recursive: true });
+    const client = makeFakeClient();
+    const logger = makeLogger();
+
+    const result = await runAction({
+      client,
+      dir: 'docs/adr',
+      loadLint: (dir) => lintCorpus({ cwd: root, dir }),
+      readMarkers: async () => ({
+        scans: [],
+        skippedPaths: ['src/z.ts', 'src/zz.ts'],
+        limit: 1000,
+        totalCandidates: 1002,
+      }),
+      extract: async () => ({
+        changedFiles: ['src/z.ts', 'src/zz.ts'],
+        markerFiles: ['src/z.ts', 'src/zz.ts'],
+        changedDependencies: [],
+        truncated: false,
+      }),
+      log: logger.log,
+    });
+
+    expect(result.failed).toBe(false);
+    expect(logger.warning.join('\n')).toContain('skipped: src/z.ts, src/zz.ts');
+    expect(result.outcome?.findings.map((finding) => finding.rule)).toContain('marker-scan-capped');
   });
 });

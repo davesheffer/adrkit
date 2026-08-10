@@ -15,6 +15,7 @@ import {
   mergeSourceDeclarations,
   migrateMadr,
   readSourceMarkers,
+  readSourceMarkersBatch,
   resolveAffects,
   resolveSourceMarkers,
   renderDotGraph,
@@ -647,6 +648,38 @@ function renderHumanCheck(outcome: ReturnType<typeof checkChanges>): string {
     );
   }
 
+  // Silent when there was nothing to scan: `adr check` with no paths would otherwise
+  // report an all-zero scan on every run.
+  if (outcome.markerScan && outcome.markerScan.totalCandidates > 0) {
+    const counts = outcome.markerScan.counts;
+    output +=
+      `marker scan: ${counts.scanned} scanned, ${counts.absent} absent, ` +
+      `${counts.unreadable} unreadable, ${counts['out-of-tree']} out-of-tree, ` +
+      `${counts.truncated} truncated, ${counts.skipped} skipped\n`;
+
+    const unavailable = [
+      ...outcome.markerScan.absentPaths,
+      ...outcome.markerScan.unreadablePaths,
+      ...outcome.markerScan.outOfTreePaths,
+      ...outcome.markerScan.skippedPaths,
+    ];
+    if (unavailable.length > 0) {
+      const shown = unavailable.slice(0, 10);
+      const remaining = unavailable.length - shown.length;
+      output += `marker scan unavailable for: ${shown.join(', ')}`;
+      if (remaining > 0) output += `, and ${remaining} more (see --json for the complete lists)`;
+      output += '\n';
+    }
+
+    if (outcome.markerScan.truncatedPaths.length > 0) {
+      const shown = outcome.markerScan.truncatedPaths.slice(0, 10);
+      const remaining = outcome.markerScan.truncatedPaths.length - shown.length;
+      output += `marker scan truncated after ${MARKER_HEADER_WINDOW_BYTES} bytes for: ${shown.join(', ')}`;
+      if (remaining > 0) output += `, and ${remaining} more (see --json for the complete list)`;
+      output += '\n';
+    }
+  }
+
   if (outcome.findings.length > 0) {
     output += 'Findings:\n';
     output += renderHumanLint(outcome.findings);
@@ -679,7 +712,8 @@ async function runCheck(args: string[]): Promise<number> {
     if (exitCode !== undefined) return exitCode;
     throw error;
   }
-  const outcome = checkChanges({ lint, changedFiles: parsed.positionals, dir });
+  const markerScans = await readSourceMarkersBatch(parsed.positionals);
+  const outcome = checkChanges({ lint, changedFiles: parsed.positionals, dir, markerScans });
 
   if (parsed.values.json) {
     writeStdout(`${JSON.stringify(outcome, null, 2)}\n`);

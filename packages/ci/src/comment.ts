@@ -20,15 +20,73 @@ const HISTORY_NOTE = 'These no longer bind this change, and are listed for conte
 // trimmed semantically (R6) — this only shortens what is rendered.
 const MAX_GOVERNING = 50;
 
+// Display cap for the declarations on one decision. Unlike `firedMatchers`, which the
+// corpus authors, a declaration is authored by the pull request: one file's 8 KB header
+// window holds ~630 `// @adr 0021` lines, and the path in each is the author's too.
+// Bounding what is rendered is what keeps that content out of the body budget below.
+const MAX_DECLARATIONS = 10;
+
+/**
+ * GitHub rejects a comment body over 65,536 characters with a 422. That is not a
+ * permission error, so it would propagate out of the Action and fail the job — which
+ * would let pull-request-authored marker content change the check's result, exactly
+ * what ADR-0021 says it must never do. The body is bounded here instead.
+ */
+const MAX_COMMENT_CHARS = 65536;
+const TRUNCATION_NOTICE =
+  '- …output truncated to fit GitHub’s comment size limit; run `adr check` locally for the complete result.';
+
+// A finding's path and rule are the blocking identity a reviewer needs. Optional
+// detail must not make that whole line too large for the body limiter to retain.
+const MAX_FINDING_FIELD_CHARS = 256;
+const MAX_FINDING_MESSAGE_CHARS = 1024;
+
 function changedRecordFindings(outcome: CheckOutcome): Finding[] {
   const changed = new Set(outcome.changedRecords);
-  return outcome.findings.filter((finding) => finding.path !== undefined && changed.has(finding.path));
+  return outcome.findings.filter(
+    (finding) =>
+      finding.field !== 'marker' && finding.path !== undefined && changed.has(finding.path),
+  );
+}
+
+/**
+ * Render a value as an inline code span it cannot escape.
+ *
+ * A changed path is named by the pull request, and a filename may legally hold a
+ * backtick. `` `src/x`[Approved](https://evil.example)`y.ts` `` closes the span early
+ * and the rest renders as a live link inside a comment authored by the bot. Per
+ * CommonMark 6.1 a span delimited by N backticks can carry any run shorter than N, so
+ * the delimiter is chosen to outrun the content; a leading or trailing backtick also
+ * needs the padding space the same rule strips back out.
+ *
+ * Control characters are escaped rather than delimited: a filename may contain a
+ * newline, which ends the bullet no matter how the span is fenced.
+ */
+function code(value: string): string {
+  const safe = value.replace(
+    /[\u0000-\u001f\u007f]/g,
+    (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`,
+  );
+  let longestRun = 0;
+  for (const run of safe.matchAll(/`+/g)) longestRun = Math.max(longestRun, run[0].length);
+  const fence = '`'.repeat(longestRun + 1);
+  const pad = safe.startsWith('`') || safe.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${safe}${pad}${fence}`;
+}
+
+function boundedDetail(value: string, limit: number, label: string): string {
+  if (value.length <= limit) return value;
+  const suffix = `… [${label} truncated]`;
+  return `${value.slice(0, Math.max(0, limit - suffix.length))}${suffix}`;
 }
 
 function renderFindingLine(finding: Finding): string {
-  const where = finding.path ? `\`${finding.path}\`` : '(corpus)';
-  const field = finding.field ? ` (\`${finding.field}\`)` : '';
-  return `- ${where} — \`${finding.rule}\`${field}: ${finding.message}`;
+  const where = finding.path ? code(finding.path) : '(corpus)';
+  const field = finding.field
+    ? ` (${code(boundedDetail(finding.field, MAX_FINDING_FIELD_CHARS, 'field'))})`
+    : '';
+  const message = boundedDetail(finding.message, MAX_FINDING_MESSAGE_CHARS, 'message');
+  return `- ${where} — ${code(finding.rule)}${field}: ${message}`;
 }
 
 /**
@@ -41,9 +99,42 @@ function renderDecisionLines(decision: GoverningDecision, withStatus: boolean): 
   const successor = decision.supersededBy ? ` — superseded by **${decision.supersededBy}**` : '';
   const lines = [`- **${decision.recordId}** — ${decision.title}${status}${successor}`];
   for (const matcher of decision.firedMatchers) {
-    lines.push(`  - via \`${matcher.type}\`: \`${matcher.pattern}\``);
+    lines.push(`  - via ${code(matcher.type)}: ${code(matcher.pattern)}`);
+  }
+  const declarations = decision.declaredBy ?? [];
+  for (const declaration of declarations.slice(0, MAX_DECLARATIONS)) {
+    lines.push(
+      `  - declared by ${code(`${declaration.path}:${declaration.line}`)} (${code(`@adr ${declaration.ref}`)})`,
+    );
+  }
+  const remaining = declarations.length - Math.min(declarations.length, MAX_DECLARATIONS);
+  if (remaining > 0) {
+    lines.push(`  - …and ${remaining} more declaration${remaining === 1 ? '' : 's'}`);
   }
   return lines;
+}
+
+/**
+ * Join the rendered lines, dropping whole lines from the end until the body fits.
+ *
+ * The hidden marker is retained unconditionally: it is the comment's identity (R5), and
+ * a body that lost it would be orphaned and re-created on every run.
+ */
+function withinCommentLimit(lines: readonly string[]): string {
+  const body = `${lines.join('\n')}\n`;
+  if (body.length <= MAX_COMMENT_CHARS) return body;
+
+  // Reserve the blank line, the notice, and the trailing newline.
+  const budget = MAX_COMMENT_CHARS - (TRUNCATION_NOTICE.length + 2);
+  const kept: string[] = [CI_COMMENT_MARKER];
+  let used = CI_COMMENT_MARKER.length + 1;
+  for (const line of lines.slice(1)) {
+    const cost = line.length + 1;
+    if (used + cost > budget) break;
+    kept.push(line);
+    used += cost;
+  }
+  return `${[...kept, '', TRUNCATION_NOTICE].join('\n')}\n`;
 }
 
 function renderDecisionList(decisions: readonly GoverningDecision[], withStatus: boolean): string[] {
@@ -67,6 +158,19 @@ function renderDecisionList(decisions: readonly GoverningDecision[], withStatus:
  */
 export function renderComment(outcome: CheckOutcome): string {
   const lines: string[] = [CI_COMMENT_MARKER, '', HEADING, ''];
+  const findings = changedRecordFindings(outcome);
+  const errors = findings.filter((finding) => finding.severity === 'error');
+  const warnings = findings.filter((finding) => finding.severity === 'warn');
+
+  // Validation is the blocking result of this Action, so keep it ahead of the
+  // potentially large governance detail. If the body must be truncated, a reviewer
+  // still sees the failing record and rule instead of only the lower-priority prefix.
+  if (errors.length > 0) {
+    lines.push('#### ⚠️ Validation errors on changed records', '');
+    lines.push('These changed records fail validation and must be fixed:');
+    for (const finding of errors) lines.push(renderFindingLine(finding));
+    lines.push('');
+  }
 
   if (outcome.governedBy.length === 0) {
     lines.push(EMPTY_STATE);
@@ -86,22 +190,12 @@ export function renderComment(outcome: CheckOutcome): string {
     lines.push(...renderDecisionList(outcome.history, true));
   }
 
-  const findings = changedRecordFindings(outcome);
-  const errors = findings.filter((finding) => finding.severity === 'error');
-  const warnings = findings.filter((finding) => finding.severity === 'warn');
-
-  if (errors.length > 0) {
-    lines.push('', '#### ⚠️ Validation errors on changed records', '');
-    lines.push('These changed records fail validation and must be fixed:');
-    for (const finding of errors) lines.push(renderFindingLine(finding));
-  }
-
   if (warnings.length > 0) {
     lines.push('', '#### Warnings on changed records', '');
     for (const finding of warnings) lines.push(renderFindingLine(finding));
   }
 
-  return `${lines.join('\n')}\n`;
+  return withinCommentLimit(lines);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { join, resolve } from 'node:path';
+import { MARKER_SCAN_FILE_CAP } from '@adrkit/core';
 import {
   acceptedRecordMarkdown,
   cleanupTestDir,
@@ -128,5 +129,76 @@ describe('adr check CLI', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('No decisions govern the changed files.');
+  });
+
+  test('resolves marker-only governance and normalizes the declared path', async () => {
+    const root = await seedCorpus();
+    await writeText(join(root, 'src/owned.ts'), '// @adr 0002\nexport const owned = true;\n');
+
+    const result = await runAdr(['check', './src/owned.ts', '--dir', 'docs/adr'], root);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('0002  [accepted] Use cli paths');
+    expect(result.stdout).toContain('declared by src/owned.ts:1 (@adr 0002)');
+    expect(result.stdout).toContain('marker scan: 1 scanned, 0 absent');
+  });
+
+  test('--json distinguishes an absent changed path from a scanned file with no markers', async () => {
+    const root = await seedCorpus();
+
+    const result = await runAdr(['check', 'src/deleted.ts', '--dir', 'docs/adr', '--json'], root);
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.exitCode).toBe(0);
+    expect(parsed.markerScan.counts).toEqual({
+      scanned: 0,
+      absent: 1,
+      unreadable: 0,
+      'out-of-tree': 0,
+      truncated: 0,
+      skipped: 0,
+    });
+    expect(parsed.markerScan.absentPaths).toEqual(['src/deleted.ts']);
+  });
+
+  test('says nothing about the marker scan when there was no path to scan', async () => {
+    const root = await seedCorpus();
+
+    const result = await runAdr(['check', '--dir', 'docs/adr'], root);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain('marker scan');
+  });
+
+  test('reports truncated scans in human output with the affected path', async () => {
+    const root = await seedCorpus();
+    await writeText(join(root, 'src/large.ts'), `// @adr 0001\n${'x'.repeat(8192)}`);
+
+    const result = await runAdr(['check', 'src/large.ts', '--dir', 'docs/adr'], root);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      'marker scan: 1 scanned, 0 absent, 0 unreadable, 0 out-of-tree, 1 truncated, 0 skipped',
+    );
+    expect(result.stdout).toContain(
+      'marker scan truncated after 8192 bytes for: src/large.ts',
+    );
+  });
+
+  // Only a local invocation can reach the cap: the Action refuses to evaluate a diff
+  // that hit GitHub's 3,000-file list cap, so it never hands over that many paths.
+  test('reports a non-blocking warning when the marker scan cap is reached', async () => {
+    const root = await seedCorpus();
+    const name = (index: number): string => `src/file-${String(index).padStart(5, '0')}.ts`;
+    const paths = Array.from({ length: MARKER_SCAN_FILE_CAP + 1 }, (_, index) => name(index));
+
+    const result = await runAdr(['check', ...paths, '--dir', 'docs/adr'], root);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      `marker scan: 0 scanned, ${MARKER_SCAN_FILE_CAP} absent, 0 unreadable, 0 out-of-tree, 0 truncated, 1 skipped`,
+    );
+    expect(result.stdout).toContain('marker-scan-capped');
+    expect(result.stdout).toContain(name(MARKER_SCAN_FILE_CAP));
   });
 });
