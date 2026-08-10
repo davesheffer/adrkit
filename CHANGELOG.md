@@ -11,16 +11,17 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ### Fixed
 
-- Every remaining sort on the `check --json` determinism contract now orders by
-  code unit rather than `localeCompare` (#115): `CheckOutcome.changedFiles`
-  (which also decides `changedRecords`), the shared `sortFindings` tuple that
-  orders every findings array, and the Action's `changedFiles` / `markerFiles` /
-  changed-dependency lists. Identical inputs now serialize to identical bytes
-  regardless of the runtime's ICU locale. The three `localeCompare` sorts under
-  `packages/core/src/affects/**` also reach `CheckOutcome` but are pinned
-  byte-identical by feature 010's FR-004 guard; they stay recorded on #115 for
-  separately-authorized follow-up, and the new ordering guard tests deliberately
-  exclude that tree until the freeze lifts.
+- The `check --json` determinism-contract sorts outside the FR-004-frozen
+  `affects` tree now order by code unit rather than `localeCompare` (#115):
+  `CheckOutcome.changedFiles` (which also decides `changedRecords`), the shared
+  `sortFindings` tuple that orders every findings array, and the Action's
+  `changedFiles` / `markerFiles` / changed-dependency lists. Identical inputs
+  now serialize to identical bytes regardless of the runtime's ICU locale —
+  except through the three `localeCompare` sorts under
+  `packages/core/src/affects/**`, which also reach `CheckOutcome` but are
+  pinned byte-identical by feature 010's FR-004 guard. Those stay recorded on
+  #115 for separately-authorized follow-up, and the new ordering guard tests
+  deliberately exclude that tree until the freeze lifts.
 
 ### Added
 
