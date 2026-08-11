@@ -1,4 +1,8 @@
-import { deriveChangedDependenciesFromBunLockDiff, type ChangedDependency } from '@adrkit/core';
+import {
+  compareCodeUnits,
+  deriveChangedDependenciesFromBunLockDiff,
+  type ChangedDependency,
+} from '@adrkit/core';
 import type { GitHubClient, PrFile } from './github.ts';
 
 /**
@@ -63,7 +67,7 @@ function deriveChangedDependencies(files: readonly PrFile[]): ChangedDependency[
     }
   }
   return [...byKey.values()].sort(
-    (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
+    (a, b) => compareCodeUnits(a.name, b.name) || compareCodeUnits(a.version, b.version),
   );
 }
 
@@ -78,10 +82,10 @@ export async function extractChanges(client: GitHubClient): Promise<ExtractedCha
   const files = await client.listPullFiles();
   const truncated = files.length >= LIST_FILES_CAP;
 
-  const changedFiles = [...new Set(files.flatMap(pathsForFile))].sort((a, b) => a.localeCompare(b));
+  const changedFiles = [...new Set(files.flatMap(pathsForFile))].sort(compareCodeUnits);
   const markerFiles = [
     ...new Set(files.filter((file) => file.status !== 'removed').map((file) => file.filename)),
-  ].sort((a, b) => a.localeCompare(b));
+  ].sort(compareCodeUnits);
   const changedDependencies = deriveChangedDependencies(files);
 
   return { changedFiles, markerFiles, changedDependencies, truncated };

@@ -45901,12 +45901,23 @@ async function parseAdrFile(path, cwd = process.cwd()) {
     path: normalizeDisplayPath(absolutePath, cwd)
   };
 }
+// ../core/src/ordering/index.ts
+function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function compareFindings(a, b) {
+  return compareCodeUnits(a.rule, b.rule) || compareCodeUnits(a.id ?? "", b.id ?? "") || compareCodeUnits(a.pattern ?? "", b.pattern ?? "") || compareCodeUnits(a.path ?? "", b.path ?? "") || compareCodeUnits(a.field ?? "", b.field ?? "") || compareCodeUnits(a.message, b.message);
+}
+function sortFindingsCanonical(findings) {
+  return [...findings].sort(compareFindings);
+}
+
 // ../core/src/validate/findings.ts
 function compareOptional(a, b) {
-  return (a ?? "").localeCompare(b ?? "");
+  return compareCodeUnits(a ?? "", b ?? "");
 }
 function sortFindings(findings) {
-  return [...findings].sort((a, b) => a.rule.localeCompare(b.rule) || compareOptional(a.id, b.id) || compareOptional(a.pattern, b.pattern) || compareOptional(a.path, b.path) || compareOptional(a.field, b.field) || a.message.localeCompare(b.message));
+  return [...findings].sort((a, b) => compareCodeUnits(a.rule, b.rule) || compareOptional(a.id, b.id) || compareOptional(a.pattern, b.pattern) || compareOptional(a.path, b.path) || compareOptional(a.field, b.field) || compareCodeUnits(a.message, b.message));
 }
 // ../core/src/validate/contract.ts
 function fieldPath(path) {
@@ -46162,16 +46173,6 @@ async function lintCorpus(options = {}) {
 }
 // ../core/src/affects/matchers/package.ts
 var import_semver = __toESM(require_semver2(), 1);
-// ../core/src/ordering/index.ts
-function compareCodeUnits(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-function compareFindings(a, b) {
-  return compareCodeUnits(a.rule, b.rule) || compareCodeUnits(a.id ?? "", b.id ?? "") || compareCodeUnits(a.pattern ?? "", b.pattern ?? "") || compareCodeUnits(a.path ?? "", b.path ?? "") || compareCodeUnits(a.field ?? "", b.field ?? "") || compareCodeUnits(a.message, b.message);
-}
-function sortFindingsCanonical(findings) {
-  return [...findings].sort(compareFindings);
-}
 // ../core/src/import/status.ts
 var MADR_RECOGNIZED_STATUSES = [
   "draft",

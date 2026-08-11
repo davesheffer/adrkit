@@ -1,3 +1,6 @@
+// Runtime-acyclic: `../ordering/index.ts` imports `Finding` from here type-only.
+import { compareCodeUnits } from '../ordering/index.ts';
+
 export const IMPORT_FINDING_RULES = [
   'import-incomplete',
   'import-status-unrecognized',
@@ -22,18 +25,18 @@ export interface Finding {
 }
 
 function compareOptional(a: string | undefined, b: string | undefined): number {
-  return (a ?? '').localeCompare(b ?? '');
+  return compareCodeUnits(a ?? '', b ?? '');
 }
 
 export function sortFindings(findings: readonly Finding[]): Finding[] {
   return [...findings].sort(
     (a, b) =>
-      a.rule.localeCompare(b.rule) ||
+      compareCodeUnits(a.rule, b.rule) ||
       compareOptional(a.id, b.id) ||
       compareOptional(a.pattern, b.pattern) ||
       compareOptional(a.path, b.path) ||
       compareOptional(a.field, b.field) ||
-      a.message.localeCompare(b.message),
+      compareCodeUnits(a.message, b.message),
   );
 }
 

@@ -47585,12 +47585,17 @@ function decisionBucketFor(status) {
     return "activeProposals";
   return "history";
 }
+// ../core/src/ordering/index.ts
+function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 // ../core/src/validate/findings.ts
 function compareOptional(a, b) {
-  return (a ?? "").localeCompare(b ?? "");
+  return compareCodeUnits(a ?? "", b ?? "");
 }
 function sortFindings(findings) {
-  return [...findings].sort((a, b) => a.rule.localeCompare(b.rule) || compareOptional(a.id, b.id) || compareOptional(a.pattern, b.pattern) || compareOptional(a.path, b.path) || compareOptional(a.field, b.field) || a.message.localeCompare(b.message));
+  return [...findings].sort((a, b) => compareCodeUnits(a.rule, b.rule) || compareOptional(a.id, b.id) || compareOptional(a.pattern, b.pattern) || compareOptional(a.path, b.path) || compareOptional(a.field, b.field) || compareCodeUnits(a.message, b.message));
 }
 // ../core/src/validate/contract.ts
 function fieldPath(path) {
@@ -48211,11 +48216,6 @@ function scanBoundedSourceMarkerWindow(source, path, truncated) {
 import { constants as constants3, lstat as lstat2, open, realpath } from "node:fs/promises";
 import { isAbsolute as isAbsolute3, relative as relative2, resolve as resolve3, sep as sep3 } from "node:path";
 
-// ../core/src/ordering/index.ts
-function compareCodeUnits(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
 // ../core/src/markers/pool.ts
 async function mapConcurrent(items, concurrency, task) {
   const results = new Array(items.length);
@@ -48438,7 +48438,7 @@ function isCorpusRecordPath(file2, dir) {
   return rest !== TEMPLATE_BASENAME && RECORD_BASENAME.test(rest);
 }
 function uniqueSorted(values) {
-  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 function markerScanReport(batch) {
   const absentPaths = [];
@@ -48575,15 +48575,15 @@ function deriveChangedDependencies(files) {
       byKey.set(`${dependency.name}\x00${dependency.version}`, dependency);
     }
   }
-  return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+  return [...byKey.values()].sort((a, b) => compareCodeUnits(a.name, b.name) || compareCodeUnits(a.version, b.version));
 }
 async function extractChanges(client) {
   const files = await client.listPullFiles();
   const truncated = files.length >= LIST_FILES_CAP;
-  const changedFiles = [...new Set(files.flatMap(pathsForFile))].sort((a, b) => a.localeCompare(b));
+  const changedFiles = [...new Set(files.flatMap(pathsForFile))].sort(compareCodeUnits);
   const markerFiles = [
     ...new Set(files.filter((file2) => file2.status !== "removed").map((file2) => file2.filename))
-  ].sort((a, b) => a.localeCompare(b));
+  ].sort(compareCodeUnits);
   const changedDependencies = deriveChangedDependencies(files);
   return { changedFiles, markerFiles, changedDependencies, truncated };
 }
