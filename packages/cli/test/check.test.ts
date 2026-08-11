@@ -180,9 +180,14 @@ describe('adr check CLI', () => {
     expect(result.stdout).toContain(
       'marker scan: 1 scanned, 0 absent, 0 unreadable, 0 out-of-tree, 1 truncated, 0 skipped',
     );
+    // "within the first", not "after": this file's scan stopped at its last complete
+    // line — byte 13 — so naming 8192 as where it stopped states a specific wrong
+    // number. `check` reports the window as the bound it is; `explain` reports the
+    // measurement (ADR-0024).
     expect(result.stdout).toContain(
-      'marker scan truncated after 8192 bytes for: src/large.ts',
+      'marker scan truncated within the first 8192 bytes for: src/large.ts',
     );
+    expect(result.stdout).not.toContain('truncated after 8192 bytes');
   });
 
   // Only a local invocation can reach the cap: the Action refuses to evaluate a diff

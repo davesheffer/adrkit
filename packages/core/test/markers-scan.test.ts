@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import {
   MARKER_HEADER_WINDOW_BYTES,
@@ -293,13 +293,17 @@ describe('scanSourceMarkers — the header window', () => {
 describe('readSourceMarkers', () => {
   test('reports a scanned file, its markers, and an untruncated window', async () => {
     const root = await resetTestDir(DIR_NAME);
-    await writeText(join(root, 'src/sync.ts'), '// @adr 0012\nexport const sync = true;\n');
+    const source = '// @adr 0012\nexport const sync = true;\n';
+    await writeText(join(root, 'src/sync.ts'), source);
+    const bytes = new TextEncoder().encode(source).length;
 
     expect(await readSourceMarkers('src/sync.ts', root)).toEqual({
       path: 'src/sync.ts',
       state: 'scanned',
       truncated: false,
       markers: [{ path: 'src/sync.ts', ref: '0012', id: '0012', line: 1 }],
+      scannedBytes: bytes,
+      fileBytes: bytes,
     });
   });
 
@@ -384,6 +388,252 @@ describe('readSourceMarkers', () => {
 
     expect(scan.truncated).toBe(true);
     expect(scan.markers).toEqual([]);
+  });
+});
+
+/**
+ * Issue #108: `truncated` says bytes were left unscanned but not how many, and the window
+ * constant does not answer that either — the scan stops at the last complete line inside
+ * it, so `min(fileBytes, windowBytes)` is not the extent. `scannedBytes` / `fileBytes`
+ * report the measurement, making `fileBytes - scannedBytes` the size of the unscanned
+ * remainder. They do NOT say whether a marker sits past the window; nothing can, short of
+ * reading further (ADR-0024).
+ *
+ * These cases pin the boundary from both sides and assert exact extents rather than
+ * `< fileBytes` bounds, which any wrong smaller number satisfies.
+ */
+describe('readSourceMarkers — the scanned extent', () => {
+  /** Reads what the scanner reports it read, so the claim is checked against the file. */
+  async function scannedPrefix(root: string, path: string, scannedBytes: number): Promise<Uint8Array> {
+    return (await readFile(join(root, path))).subarray(0, scannedBytes);
+  }
+
+  test('a fully scanned file reports equal extents, so an empty result is complete', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const source = 'export const sync = true;\n';
+    await writeText(join(root, 'src/sync.ts'), source);
+
+    const scan = await readSourceMarkers('src/sync.ts', root);
+
+    expect(scan.markers).toEqual([]);
+    expect(scan.truncated).toBe(false);
+    expect(scan.scannedBytes).toBe(new TextEncoder().encode(source).length);
+    expect(scan.scannedBytes).toBe(scan.fileBytes);
+  });
+
+  test('the #108 shape: markers in the header of a large file, reported as found and bounded', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const header = `${MARKER_LINE}\n`;
+    const body = `${'#'.repeat(MARKER_HEADER_WINDOW_BYTES * 2)}\n`;
+    await writeText(join(root, 'src/big.ts'), `${header}${body}`);
+
+    const scan = await readSourceMarkers('src/big.ts', root);
+
+    // Every marker in the file was found, and the extent says the search was partial —
+    // which is exactly the pair `truncated` alone could not express.
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+    expect(scan.truncated).toBe(true);
+    // The exact extent: the body is one unbroken run, so the header's terminator is the
+    // last one inside the window. A `< fileBytes` bound would accept any wrong smaller
+    // number, which is the assertion this pair replaces.
+    expect(scan.scannedBytes).toBe(header.length);
+    expect(scan.fileBytes).toBe(header.length + body.length);
+  });
+
+  test('the extent is the cut-back line, not the window constant', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // One enormous line after the header, so the last complete line inside the window
+    // ends far short of it: `min(fileBytes, windowBytes)` would be wrong by 8 KB.
+    const header = `${MARKER_LINE}\n`;
+    await writeText(join(root, 'src/oneline.ts'), `${header}${'#'.repeat(MARKER_HEADER_WINDOW_BYTES * 3)}\n`);
+
+    const scan = await readSourceMarkers('src/oneline.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(header.length);
+    expect(scan.scannedBytes).toBeLessThan(MARKER_HEADER_WINDOW_BYTES);
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+  });
+
+  test('the extent is the LAST complete line in the window, not the first', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // 100-byte lines, so 81 of them (8100 bytes) fit under the window and the 82nd does
+    // not. The marker sits on line 81 — the last complete line inside the window — so a
+    // cut at any earlier terminator both misreports the extent and loses the marker.
+    const LINE_BYTES = 100;
+    const filler = `${'x'.repeat(LINE_BYTES - 1)}\n`.repeat(80);
+    const markerLine = `${MARKER_LINE}${' '.repeat(LINE_BYTES - MARKER_LINE.length - 1)}\n`;
+    expect(markerLine.length).toBe(LINE_BYTES);
+    await writeText(join(root, 'src/lines.ts'), `${filler}${markerLine}${filler}`);
+
+    const scan = await readSourceMarkers('src/lines.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(LINE_BYTES * 81);
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+    expect(scan.markers.map((marker) => marker.line)).toEqual([81]);
+  });
+
+  test('a window holding no line terminator reports nothing scanned rather than 8192', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(join(root, 'src/blob.ts'), '#'.repeat(MARKER_HEADER_WINDOW_BYTES + 500));
+
+    const scan = await readSourceMarkers('src/blob.ts', root);
+
+    // The scanner was handed no complete line, so it examined nothing. Reporting the
+    // window here would claim 8192 bytes were searched when none were.
+    expect(scan.scannedBytes).toBe(0);
+    expect(scan.truncated).toBe(true);
+    expect(scan.markers).toEqual([]);
+  });
+
+  test('a line completed only by the probe byte is outside the window, in both the extent and the scan', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // The reader probes one byte past the window to observe truncation. Here that probe
+    // byte is the terminator of a MARKER line whose content fills the window exactly, so
+    // the fixture pins both halves of the coupling at once:
+    //   - measuring the cut over what was READ rather than over the window would report
+    //     8193, more than the window it is meant to bound;
+    //   - decoding what was READ rather than the measured extent would complete this line
+    //     and turn it into a declaration, while the reported extent still said 0.
+    // The reported number and the scanned text have to be the same computation.
+    const overWindow = `${MARKER_LINE}${' '.repeat(MARKER_HEADER_WINDOW_BYTES - MARKER_LINE.length)}\n`;
+    expect(overWindow.length).toBe(MARKER_HEADER_WINDOW_BYTES + 1);
+    await writeText(join(root, 'src/probe.ts'), `${overWindow}export const tail = 1;\n`);
+
+    const scan = await readSourceMarkers('src/probe.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(0);
+    expect(scan.scannedBytes).toBeLessThanOrEqual(MARKER_HEADER_WINDOW_BYTES);
+    expect(scan.markers).toEqual([]);
+  });
+
+  test('a line ending exactly at the window boundary is inside it', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // Last byte of the window is this line's terminator, so the whole window is complete
+    // lines: the extent is the window exactly. A cut that stopped a byte short would
+    // fall back to the header's terminator and lose 8179 bytes of scanned text.
+    const header = `${MARKER_LINE}\n`;
+    const filler = `${'#'.repeat(MARKER_HEADER_WINDOW_BYTES - header.length - 1)}\n`;
+    expect(header.length + filler.length).toBe(MARKER_HEADER_WINDOW_BYTES);
+    await writeText(join(root, 'src/edge.ts'), `${header}${filler}tail\n`);
+
+    const scan = await readSourceMarkers('src/edge.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(MARKER_HEADER_WINDOW_BYTES);
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+  });
+
+  test('a file of exactly the window size is complete, not truncated', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const header = `${MARKER_LINE}\n`;
+    const source = `${header}${'#'.repeat(MARKER_HEADER_WINDOW_BYTES - header.length - 1)}\n`;
+    expect(source.length).toBe(MARKER_HEADER_WINDOW_BYTES);
+    await writeText(join(root, 'src/exact.ts'), source);
+
+    const scan = await readSourceMarkers('src/exact.ts', root);
+
+    // Nothing was left unread, so reporting `truncated` here would call a provably
+    // complete scan partial — and would pair it with equal extents, which is incoherent.
+    expect(scan.truncated).toBe(false);
+    expect([scan.scannedBytes, scan.fileBytes]).toEqual([
+      MARKER_HEADER_WINDOW_BYTES,
+      MARKER_HEADER_WINDOW_BYTES,
+    ]);
+  });
+
+  test('a file with no trailing terminator is still measured whole', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // Untruncated, so the extent is what was read, not a cut: cutting an untruncated
+    // window back to its last terminator would drop the final line from both the
+    // measurement and the scan, and here that line is the whole body.
+    const source = `${MARKER_LINE}\nexport const x = 1;`;
+    await writeText(join(root, 'src/notrail.ts'), source);
+
+    const scan = await readSourceMarkers('src/notrail.ts', root);
+
+    expect(scan.truncated).toBe(false);
+    expect([scan.scannedBytes, scan.fileBytes]).toEqual([source.length, source.length]);
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+  });
+
+  test('a CR-only file is measured and scanned like any other', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    // `\r` alone is a line terminator to this scanner (`completeLinePrefix` cuts on it
+    // and `scanWindow` splits on it), so the byte-level cut has to honour 0x0D as well
+    // as 0x0A. Recognising only 0x0A would report nothing scanned for this file and lose
+    // a header marker the pre-measurement decode found.
+    const header = `${MARKER_LINE}\r`;
+    const body = `${'x'.repeat(99)}\r`.repeat(200);
+    await writeText(join(root, 'src/mac.ts'), `${header}${body}`);
+
+    const scan = await readSourceMarkers('src/mac.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(header.length + 100 * 81);
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+  });
+
+  test('a terminator at the very first byte is inside the window', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(join(root, 'src/leading.ts'), `\n${'#'.repeat(MARKER_HEADER_WINDOW_BYTES + 100)}`);
+
+    const scan = await readSourceMarkers('src/leading.ts', root);
+
+    // One complete line — an empty one — was scanned. Byte 0 is a byte like any other.
+    expect(scan.truncated).toBe(true);
+    expect(scan.scannedBytes).toBe(1);
+  });
+
+  test('the extent lands on a code-point boundary when the window splits one', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    const head = new TextEncoder().encode(`${MARKER_LINE}\n`);
+    // Fill to one byte short of the window, then straddle it with a 2-byte code point.
+    const filler = new TextEncoder().encode('#'.repeat(MARKER_HEADER_WINDOW_BYTES - head.length - 1));
+    const straddle = new TextEncoder().encode('é\ntail\n');
+    const bytes = new Uint8Array(head.length + filler.length + straddle.length);
+    bytes.set(head);
+    bytes.set(filler, head.length);
+    bytes.set(straddle, head.length + filler.length);
+    await mkdir(join(root, 'src'), { recursive: true });
+    await writeFile(join(root, 'src/straddle.ts'), bytes);
+
+    const scan = await readSourceMarkers('src/straddle.ts', root);
+
+    expect(scan.truncated).toBe(true);
+    // The only complete line inside the window is the header, so the extent stops there
+    // and the split code point is never part of what was scanned. Decoding the reported
+    // prefix in fatal mode proves the boundary claim rather than assuming it.
+    expect(scan.scannedBytes).toBe(head.length);
+    const prefix = await scannedPrefix(root, 'src/straddle.ts', scan.scannedBytes as number);
+    expect(() => new TextDecoder('utf-8', { fatal: true }).decode(prefix)).not.toThrow();
+    expect(scan.markers.map((marker) => marker.ref)).toEqual(['0012']);
+  });
+
+  test('a state that read nothing carries no extent, and a scanned one always does', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await writeText(join(root, 'src/sync.ts'), '// @adr 0012\n');
+    const outside = await resetTestDir(OUTSIDE_DIR_NAME);
+    await writeText(join(outside, 'claim.ts'), '// @adr 0012\n');
+
+    const refused = [
+      await readSourceMarkers('src/missing.ts', root),
+      await readSourceMarkers('src', root),
+      await readSourceMarkers(`..${sep}${OUTSIDE_DIR_NAME}/claim.ts`, root),
+    ];
+    const scanned = await readSourceMarkers('src/sync.ts', root);
+
+    expect(refused.map((scan) => scan.state)).toEqual(['absent', 'unreadable', 'out-of-tree']);
+    // The scanned control is what makes the absences meaningful: without it this test
+    // would pass just as well if the extent were never reported at all.
+    expect([scanned.scannedBytes, scanned.fileBytes]).toEqual([13, 13]);
+    // `0` would be a measurement, and nothing was measured. Absent is the honest report.
+    for (const scan of refused) {
+      expect(scan.scannedBytes).toBeUndefined();
+      expect(scan.fileBytes).toBeUndefined();
+    }
   });
 });
 
@@ -547,13 +797,22 @@ describe('readSourceMarkersBatch', () => {
       // Two distinct POSIX files. Rewriting the backslash would scan the second and
       // report its marker under the first's name — a wrong answer that reads as
       // `scanned`, not `absent`.
-      await writeText(join(root, 'src/we\\ird.ts'), 'export const plain = true;\n');
+      const plain = 'export const plain = true;\n';
+      await writeText(join(root, 'src/we\\ird.ts'), plain);
       await writeText(join(root, 'src/we/ird.ts'), '// @adr 0012\n');
+      const bytes = new TextEncoder().encode(plain).length;
 
       const batch = await readSourceMarkersBatch(['src/we\\ird.ts'], root);
 
       expect(batch.scans).toEqual([
-        { path: 'src/we\\ird.ts', state: 'scanned', markers: [], truncated: false },
+        {
+          path: 'src/we\\ird.ts',
+          state: 'scanned',
+          markers: [],
+          truncated: false,
+          scannedBytes: bytes,
+          fileBytes: bytes,
+        },
       ]);
     },
   );

@@ -9,6 +9,46 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Added
+
+- `adr explain --json` reports `markers.scannedBytes` and `markers.fileBytes`
+  alongside the existing `windowBytes` and `truncated` (#108). `truncated` says
+  bytes were left unscanned but not how many, and the window constant does not
+  answer that either: the scan stops at the last complete line inside the window,
+  so `min(fileBytes, windowBytes)` is not the extent. Measured over all 144
+  tracked `.ts` files under `packages/<pkg>/src/**` and
+  `packages/adapters/<pkg>/src/**` at canonical LF content, 29 exceed the
+  window and their extents land 1–77 bytes short of it — and arbitrarily further
+  when one line spans the boundary, down to `0` for a window with no terminator at
+  all. `fileBytes - scannedBytes` is now the size of the unscanned remainder,
+  which is the number a per-file policy is written against:
+  `packages/cli/src/evaluate.ts` and `packages/cli/src/evaluate-snapshot.ts` both
+  report `truncated: true`, but the first left 141 bytes unread and the second
+  18825. This does **not** distinguish "a marker may lie past the window" from
+  "every marker is in the header" — nothing can, short of reading further — and
+  `truncated: false` licensed `declared: []` as a complete search before this
+  change and still does. Both new fields are omitted for a state that never opened
+  the file (`absent`, `unreadable`, `out-of-tree`), because `0` is itself a real
+  extent and cannot also mean "not measured" — the "found none" vs "could not
+  look" distinction ADR-0021 and ADR-0022 built the scan states for. Purely
+  additive and no existing field changed meaning, though the two keys are inserted
+  between `windowBytes` and `truncated`, so a consumer golden-diffing the
+  `markers` block sees a positional change rather than an append; `check --json` is
+  untouched and stays byte-identical. `@adrkit/core`'s exported
+  `SourceMarkerScan` gains the same two optional fields. Recorded as
+  [ADR-0024](docs/adr/0024-report-the-measured-scan-extent-not-the-window-constant.md).
+
+### Changed
+
+- Human output no longer prints the header-window constant where it is not the
+  number it describes (#108). `adr explain`'s note reads "only the first \<extent>
+  of \<size> bytes of \<path> were scanned" instead of restating 8192, and
+  `adr check`'s per-path warning reads "marker scan truncated **within the
+  first** 8192 bytes" instead of "truncated after 8192 bytes" — a bound stated as
+  a bound, since not one of this repository's 29 over-window source files stops
+  there. `adr explain --help` is corrected the same way. `check --json` is
+  unchanged.
+
 ### Fixed
 
 - Some of the `check --json` determinism-contract sorts now order by code unit

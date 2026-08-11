@@ -45,8 +45,9 @@ Decisions governing src/services/sync/retry.ts:
 ```
 
 This lets `affects` stay narrow — the *defining* files — while the surrounding
-neighbourhood opts in one line at a time. Only the first 8192 bytes of a file
-are scanned, in any language, and the marker must be the first content on a
+neighbourhood opts in one line at a time. At most the first 8192 bytes of a file
+are scanned, in any language — the scan stops at the last complete line inside that
+bound — and the marker must be the first content on a
 dedicated comment line that is not inside a ` ``` ` or `~~~` fence — so
 documenting the syntax, as this file does above, is not declaring it. In a
 markdown file (`.md`, `.mdx`, `.markdown`) the comment is `<!--` or `{/*`; `#`
@@ -55,8 +56,11 @@ back to the record. In
 `--json`, pattern matches carry `firedMatchers` and file declarations carry
 `declaredBy`. `explain --json` carries a single-file `markers` block, while
 `check --json` carries a `markerScan` report with scan-state counts and exact
-unavailable, truncated, and skipped paths. Human output also names truncated
-paths and the 8192-byte window that stopped the scan. Multi-file scans are capped
+unavailable, truncated, and skipped paths. The `explain` block also reports
+`scannedBytes` / `fileBytes`, so `fileBytes - scannedBytes` sizes the unscanned
+remainder of a truncated file instead of leaving it to be guessed from the window
+constant; its human note discloses that measured extent, while `check` reports the
+window as the bound it is. Multi-file scans are capped
 at 3,000 normalized paths and 16 concurrent reads; skipped paths warn but never
 fail. The cap matches GitHub's changed-file ceiling, so only a local invocation
 can reach it.

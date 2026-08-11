@@ -61,7 +61,11 @@ therefore scan differently.
 `readSourceMarkers` wraps the scanner with a bounded read and reports `state` as
 `scanned`, `absent`,
 `unreadable`, or `out-of-tree`, so "found no markers" is never confused with
-"could not look."
+"could not look." A `scanned` result also carries `scannedBytes` and `fileBytes`, the
+measured extent of the read: `fileBytes - scannedBytes` is how much of a truncated
+file went unscanned, which `truncated` alone does not say. `scannedBytes` is the cut
+actually taken, not `min(fileBytes, 8192)`, because the window is cut back to its last
+complete line. Both are omitted for a state that never opened the file.
 
 Its `path` argument is repo-relative to `cwd`. Absolute paths and paths that climb
 out of the tree are `out-of-tree`. Every symlink is refused as `unreadable`
