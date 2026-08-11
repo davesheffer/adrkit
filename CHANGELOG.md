@@ -11,17 +11,26 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ### Fixed
 
-- The `check --json` determinism-contract sorts outside the FR-004-frozen
-  `affects` tree now order by code unit rather than `localeCompare` (#115):
-  `CheckOutcome.changedFiles` (which also decides `changedRecords`), the shared
-  `sortFindings` tuple that orders every findings array, and the Action's
-  `changedFiles` / `markerFiles` / changed-dependency lists. Identical inputs
-  now serialize to identical bytes regardless of the runtime's ICU locale —
-  except through the three `localeCompare` sorts under
-  `packages/core/src/affects/**`, which also reach `CheckOutcome` but are
-  pinned byte-identical by feature 010's FR-004 guard. Those stay recorded on
-  #115 for separately-authorized follow-up, and the new ordering guard tests
-  deliberately exclude that tree until the freeze lifts.
+- Some of the `check --json` determinism-contract sorts now order by code unit
+  rather than `localeCompare` (#115): `CheckOutcome.changedFiles` (which also
+  decides `changedRecords`), the shared `sortFindings` tuple that orders every
+  findings array, and the Action's `changedFiles` / `markerFiles` /
+  changed-dependency lists. Identical inputs now serialize to identical bytes
+  regardless of the runtime's ICU locale for those surfaces — but the contract
+  is **not** fully closed. Two trees still reach `CheckOutcome` through
+  `localeCompare` and remain recorded on #115: the three sorts under
+  `packages/core/src/affects/**`, pinned byte-identical by feature 010's FR-004
+  guard until a separately-authorized unfreeze; and `packages/core/src/load/corpus.ts`
+  (`discoverAdrFiles`, `discoverSkippedMarkdownFiles`, `expandRecordInputs`),
+  out of scope for this sweep and left for a follow-up PR. The `load/corpus.ts`
+  gap is live, not theoretical — under a duplicate-id corpus, `discoverAdrFiles`'s
+  locale-dependent discovery order survives into `lintCorpus`'s `records` (the
+  `frontmatter.id` tiebreak is a no-op for equal ids), and `checkChanges` picks
+  whichever duplicate landed later as the id's canonical record. `ok` and
+  `findings` are unaffected, but `governing` / `activeProposals` / `governedBy`
+  can differ by runtime for byte-identical inputs. The new ordering guard tests
+  deliberately exclude both trees until each is addressed — see their headers
+  for why.
 
 ### Added
 

@@ -19,6 +19,19 @@
  * any change there a violation and routes legitimate changes to
  * separately-authorized later work. Those sites stay recorded on #115 until the
  * freeze lifts; scanning them here would only force one guard to break another.
+ *
+ * `packages/core/src/load/corpus.ts` also still contains three `localeCompare`
+ * sorts (`discoverAdrFiles`, `discoverSkippedMarkdownFiles`,
+ * `expandRecordInputs`) and also reaches `CheckOutcome`, via `lintCorpus`'s
+ * `records`. Not merely display order: `discoverAdrFiles`'s discovery order
+ * survives into `lint.records` whenever two records share an id, because the
+ * `frontmatter.id` tiebreak `lintCorpus` sorts by is then a no-op and the sort
+ * is stable — and `checkChanges` (`toGoverningDecisions`'s `byId` map) picks
+ * whichever duplicate landed later as that id's canonical record, changing
+ * `governing` / `activeProposals` / `governedBy` by runtime for byte-identical
+ * inputs. This file was scoped to #115's `check`/`markers`/`ordering`/`validate`
+ * sweep; `load/corpus.ts` is left for a follow-up PR and stays recorded on
+ * #115 and unscanned here until that lands.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -81,7 +94,8 @@ describe('the check --json path never reaches for localeCompare', () => {
   // The same source-scan shape as the adapter's
   // `test/glob-order.test.ts` guard, widened to every core module that feeds
   // `CheckOutcome`: `check/`, `markers/`, `ordering/`, and the shared finding
-  // sort. See the header for why `affects/` is excluded for now.
+  // sort. See the header for why `affects/` and `load/corpus.ts` are excluded
+  // for now.
   const SCANNED_DIRS = ['src/check', 'src/markers', 'src/ordering'];
   const SCANNED_FILES = ['src/validate/findings.ts'];
 
