@@ -15,7 +15,11 @@
 import { constants, lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { compareCodeUnits } from '../ordering/index.ts';
-import { MARKER_HEADER_WINDOW_BYTES, scanBoundedSourceMarkerWindow } from './scan.ts';
+import {
+  MARKER_HEADER_WINDOW_BYTES,
+  completeLineByteExtent,
+  scanBoundedSourceMarkerWindow,
+} from './scan.ts';
 import { mapConcurrent } from './pool.ts';
 import type { SourceMarker } from './types.ts';
 
@@ -41,6 +45,33 @@ export interface SourceMarkerScan {
   markers: SourceMarker[];
   /** Whether the header window stopped short of the end of the file. */
   truncated: boolean;
+  /**
+   * Bytes decoded and handed to the scanner.
+   *
+   * Not `min(fileBytes, MARKER_HEADER_WINDOW_BYTES)`: a truncated window is cut back to
+   * its last complete line, so the extent depends on where that line ends and cannot be
+   * derived from the constants alone. Absent unless `state` is `scanned` — a file that was
+   * never opened has no extent, and `0` would report a measurement rather than its absence
+   * (`0` is itself a real answer: a window holding no line terminator scanned nothing).
+   *
+   * Note the `unreadable` edge: an I/O error raised *after* some bytes were read also
+   * reports `unreadable`, and therefore no extent, even though bytes were read (#108).
+   */
+  scannedBytes?: number;
+  /**
+   * The file's size in bytes, so the size of the unscanned remainder is
+   * `fileBytes - scannedBytes` without the caller knowing the window constant. Absent
+   * unless `state` is `scanned`.
+   *
+   * Taken by `fstat` on the open handle *before* the read loop, so the two numbers are two
+   * observations of a file that can change between them: an append can yield
+   * `scannedBytes > fileBytes`, and a truncation can make a fully read file look partial.
+   * This is not the check/open race ADR-0021 records — that one is path substitution before
+   * `open`, which cannot produce this — but a content mutation behind an already-open
+   * handle. Left unreconciled rather than clamped, because agreeing the two numbers would
+   * hide a file that changed underneath the scan.
+   */
+  fileBytes?: number;
 }
 
 /**
@@ -202,7 +233,8 @@ async function readWithPreparedRoot(path: string, prepared: PreparedRoot): Promi
     // Check the opened handle rather than a path before `open`, so the file-type check
     // applies to the object we read. This does not close the `lstat` -> `open` race:
     // a concurrent process can still replace the approved path before it is opened.
-    if (!(await handle.stat()).isFile()) return refuse('unreadable');
+    const opened = await handle.stat();
+    if (!opened.isFile()) return refuse('unreadable');
 
     const buffer = new Uint8Array(MARKER_HEADER_WINDOW_BYTES + 1);
     let bytesRead = 0;
@@ -213,11 +245,22 @@ async function readWithPreparedRoot(path: string, prepared: PreparedRoot): Promi
     }
 
     const truncated = bytesRead > MARKER_HEADER_WINDOW_BYTES;
-    const source = new TextDecoder().decode(
-      buffer.subarray(0, Math.min(bytesRead, MARKER_HEADER_WINDOW_BYTES)),
-    );
+    // The scanner discards a severed line, so the extent it actually read is the cut
+    // itself, not the window. Cutting here rather than only inside the scanner keeps the
+    // reported number and the scanned text the same computation, so they cannot drift.
+    const scannedBytes = truncated
+      ? completeLineByteExtent(buffer, MARKER_HEADER_WINDOW_BYTES)
+      : bytesRead;
+    const source = new TextDecoder().decode(buffer.subarray(0, scannedBytes));
     const scan = scanBoundedSourceMarkerWindow(source, normalizedPath, truncated);
-    return { path: normalizedPath, state: 'scanned', markers: scan.markers, truncated: scan.truncated };
+    return {
+      path: normalizedPath,
+      state: 'scanned',
+      markers: scan.markers,
+      truncated: scan.truncated,
+      scannedBytes,
+      fileBytes: opened.size,
+    };
   } catch (error) {
     return refuse(scanStateForError(error));
   } finally {

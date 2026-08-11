@@ -140,9 +140,10 @@ export function syncOnce() { … }
   render, so they are content rather than comments, and `# @adr 0012` does not
   declare the file. Every other introducer above belongs to a source language and
   is ignored there.
-- **Only the first 8192 bytes** of a file are scanned. A marker is a claim that
-  the file lives under a decision; a mention far down the file is prose about
-  that decision.
+- **At most the first 8192 bytes** of a file are scanned, and the scan stops at the
+  last complete line inside that bound — `--json` reports the extent it reached. A
+  marker is a claim that the file lives under a decision; a mention far down the
+  file is prose about that decision.
 - **Nothing enters the record.** The edge is discovered when you run `explain` or `check`.
   There is no schema change and no new `affects` matcher type
   ([ADR-0021](https://github.com/mbeacom/adrkit/blob/main/docs/adr/0021-resolve-inbound-source-annotations-without-changing-the-schema.md)).
@@ -158,6 +159,8 @@ has to be guessed at:
 "markers": {
   "state": "scanned",
   "windowBytes": 8192,
+  "scannedBytes": 1582,
+  "fileBytes": 1582,
   "truncated": false,
   "declared": [{ "ref": "0012", "line": 3 }]
 }
@@ -165,8 +168,21 @@ has to be guessed at:
 
 `state` is `scanned`, `absent` (no such file), `unreadable` (not a regular file,
 or permission denied), or `out-of-tree`. `truncated` is `true` when the file is
-longer than the header window, so a marker below it was never seen. In
-`governedBy`, a pattern match carries `firedMatchers` and a file declaration
+longer than the header window, so a marker below it was never seen — and
+`truncated: false` is what makes `declared: []` mean "nothing declares this path"
+rather than "we stopped reading first".
+
+`scannedBytes` and `fileBytes` say **how much** was read, which `truncated` does
+not: `fileBytes - scannedBytes` is the size of the unscanned remainder, so a policy
+for a truncated file is yours to set rather than inherited. They cannot tell you
+whether a marker sits past the window — nothing can, short of reading further — but
+they do tell you how much further that would be. `scannedBytes` is also not
+`min(fileBytes, windowBytes)`: the scan stops at the last complete line inside the
+window, which across this repository's own sources lands 1–77 bytes short of it, and
+much further short when one long line spans the boundary. Both fields are omitted
+for a state that never opened the file.
+
+In `governedBy`, a pattern match carries `firedMatchers` and a file declaration
 carries `declaredBy`; `declaredBy` is omitted entirely when nothing declared the
 record.
 

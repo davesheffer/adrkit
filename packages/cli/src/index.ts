@@ -167,9 +167,10 @@ Report which decisions govern one repo-relative path, and why.
 
 A decision reaches a path in two directions. The record declares an "affects" pattern
 that matches it ("via path: src/**"), or the file itself declares the record in a
-comment ("declared by src/sync.ts:3 (@adr 0012)"). If <path> exists, its first 8192
-bytes are scanned for dedicated "@adr <id>" comment lines; a marker naming a record
-the corpus does not have is reported as a dangling-marker warning.
+comment ("declared by src/sync.ts:3 (@adr 0012)"). If <path> exists, at most its first
+8192 bytes are scanned for dedicated "@adr <id>" comment lines -- the scan stops at the
+last complete line inside that bound, and --json reports the extent it reached. A marker
+naming a record the corpus does not have is reported as a dangling-marker warning.
 
 Options:
   --dir <path>    ADR corpus directory (default: docs/adr)
@@ -592,16 +593,28 @@ function renderDecisionGroup(heading: string, decisions: readonly ExplainedDecis
   return output;
 }
 
-/** The `markers` block of `adr explain --json`: what was scanned, and what was found. */
+/**
+ * The `markers` block of `adr explain --json`: what was scanned, and what was found.
+ *
+ * `truncated` says bytes were left unscanned, but not how many — and the window constant
+ * does not answer that either, because the scan stops at the last complete line inside it.
+ * `scannedBytes` / `fileBytes` report the measurement, so a consumer can size the
+ * unscanned remainder and set its own policy instead of inheriting one (#108). Both are
+ * omitted for a state that never opened the file, rather than reported as `0`.
+ */
 function markerScanJson(scan: SourceMarkerScan): {
   state: SourceMarkerScan['state'];
   windowBytes: number;
+  scannedBytes?: number;
+  fileBytes?: number;
   truncated: boolean;
   declared: Array<{ ref: string; line: number }>;
 } {
   return {
     state: scan.state,
     windowBytes: MARKER_HEADER_WINDOW_BYTES,
+    ...(scan.scannedBytes === undefined ? {} : { scannedBytes: scan.scannedBytes }),
+    ...(scan.fileBytes === undefined ? {} : { fileBytes: scan.fileBytes }),
     truncated: scan.truncated,
     declared: scan.markers.map((marker) => ({ ref: marker.ref, line: marker.line })),
   };
@@ -622,8 +635,13 @@ function renderMarkerScanNote(scan: SourceMarkerScan): string {
   if (scan.state === 'out-of-tree') {
     return `Note: ${scan.path} is not a repo-relative path inside this working tree; no @adr markers were scanned.\n`;
   }
-  if (scan.truncated) {
-    return `Note: only the first ${MARKER_HEADER_WINDOW_BYTES} bytes of ${scan.path} were scanned for @adr markers.\n`;
+  // The measured extent, not the window constant: the scan stops at the last complete
+  // line inside the window, so the two differ for almost every real file. Only a scanned
+  // state can be truncated, so the extent is present whenever this branch is — the
+  // conjunction is how the types say that, not a fallback, which is why there is no
+  // window-constant default to reprint if it were ever absent.
+  if (scan.truncated && scan.scannedBytes !== undefined && scan.fileBytes !== undefined) {
+    return `Note: only the first ${scan.scannedBytes} of ${scan.fileBytes} bytes of ${scan.path} were scanned for @adr markers.\n`;
   }
   return '';
 }
@@ -674,7 +692,12 @@ function renderHumanCheck(outcome: ReturnType<typeof checkChanges>): string {
     if (outcome.markerScan.truncatedPaths.length > 0) {
       const shown = outcome.markerScan.truncatedPaths.slice(0, 10);
       const remaining = outcome.markerScan.truncatedPaths.length - shown.length;
-      output += `marker scan truncated after ${MARKER_HEADER_WINDOW_BYTES} bytes for: ${shown.join(', ')}`;
+      // "within the first N" rather than "after N": the scan stops at the last complete
+      // line inside the window, so the window is a bound on the extent, not the extent.
+      // `check` reports the bound because per-path extents would have to travel through
+      // `MarkerScanReport`, which is `check --json`'s contract; `explain` reports the
+      // measurement (ADR-0024).
+      output += `marker scan truncated within the first ${MARKER_HEADER_WINDOW_BYTES} bytes for: ${shown.join(', ')}`;
       if (remaining > 0) output += `, and ${remaining} more (see --json for the complete list)`;
       output += '\n';
     }

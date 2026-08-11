@@ -48144,6 +48144,14 @@ function completeLinePrefix(source) {
 `), source.lastIndexOf("\r"));
   return lastNewline === -1 ? "" : source.slice(0, lastNewline + 1);
 }
+function completeLineByteExtent(bytes, limit) {
+  for (let index = Math.min(limit, bytes.length) - 1;index >= 0; index -= 1) {
+    const byte = bytes[index];
+    if (byte === 10 || byte === 13)
+      return index + 1;
+  }
+  return 0;
+}
 function dedicatedMarkerIndex(line, introducers) {
   let commentStart = 0;
   while (commentStart < line.length && isSpace(line[commentStart] ?? ""))
@@ -48300,7 +48308,8 @@ async function readWithPreparedRoot(path, prepared) {
     if (!isInsideRoot(prepared.realRoot, target))
       return refuse("out-of-tree");
     handle = await open(candidate, readFlags());
-    if (!(await handle.stat()).isFile())
+    const opened = await handle.stat();
+    if (!opened.isFile())
       return refuse("unreadable");
     const buffer = new Uint8Array(MARKER_HEADER_WINDOW_BYTES + 1);
     let bytesRead = 0;
@@ -48311,9 +48320,17 @@ async function readWithPreparedRoot(path, prepared) {
       bytesRead += chunk.bytesRead;
     }
     const truncated = bytesRead > MARKER_HEADER_WINDOW_BYTES;
-    const source = new TextDecoder().decode(buffer.subarray(0, Math.min(bytesRead, MARKER_HEADER_WINDOW_BYTES)));
+    const scannedBytes = truncated ? completeLineByteExtent(buffer, MARKER_HEADER_WINDOW_BYTES) : bytesRead;
+    const source = new TextDecoder().decode(buffer.subarray(0, scannedBytes));
     const scan = scanBoundedSourceMarkerWindow(source, normalizedPath, truncated);
-    return { path: normalizedPath, state: "scanned", markers: scan.markers, truncated: scan.truncated };
+    return {
+      path: normalizedPath,
+      state: "scanned",
+      markers: scan.markers,
+      truncated: scan.truncated,
+      scannedBytes,
+      fileBytes: opened.size
+    };
   } catch (error52) {
     return refuse(scanStateForError(error52));
   } finally {

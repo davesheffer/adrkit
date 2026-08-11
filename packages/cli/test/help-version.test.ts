@@ -68,6 +68,17 @@ describe('adr help (#42)', () => {
     expect(result.stdout).toContain('--rename');
   });
 
+  test('adr help explain states the scan bound as a bound, not as the extent', async () => {
+    const result = await runAdr(['help', 'explain']);
+
+    expect(result.exitCode).toBe(0);
+    // The window bounds the scan; the scan stops at the last complete line inside it, so
+    // "its first 8192 bytes are scanned" would promise an extent the tool does not reach
+    // (ADR-0024). Pinned because help text is otherwise only compared against itself.
+    expect(result.stdout).toContain('at most its first');
+    expect(result.stdout).not.toContain('its first 8192\nbytes are scanned');
+  });
+
   test('adr <command> --help matches adr help <command>', async () => {
     for (const command of ['lint', 'migrate', 'new', 'graph', 'explain', 'check', 'evaluate', 'queue']) {
       const [viaFlag, viaHelp] = await Promise.all([runAdr([command, '--help']), runAdr(['help', command])]);

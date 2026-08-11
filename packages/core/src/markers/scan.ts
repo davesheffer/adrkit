@@ -131,6 +131,29 @@ function completeLinePrefix(source: string): string {
   return lastNewline === -1 ? '' : source.slice(0, lastNewline + 1);
 }
 
+/**
+ * {@link completeLinePrefix}'s cut, measured on the raw bytes: the extent of the
+ * complete lines within `bytes[0, limit)`, or `0` when the window holds no line
+ * terminator at all.
+ *
+ * The byte search is equivalent to the string search rather than an approximation of
+ * it. `\n` (0x0A) and `\r` (0x0D) are single-byte code points, and every UTF-8
+ * continuation byte is >= 0x80, so neither terminator can occur inside a multi-byte
+ * sequence.
+ *
+ * Measured here rather than by re-encoding the decoded prefix, for the same reason the
+ * truncation flag is observed rather than inferred (see
+ * {@link scanBoundedSourceMarkerWindow}): `TextDecoder` may drop a BOM or expand one
+ * invalid byte into U+FFFD, so a re-encoded length is not the length that was read.
+ */
+export function completeLineByteExtent(bytes: Uint8Array, limit: number): number {
+  for (let index = Math.min(limit, bytes.length) - 1; index >= 0; index -= 1) {
+    const byte = bytes[index];
+    if (byte === 0x0a || byte === 0x0d) return index + 1;
+  }
+  return 0;
+}
+
 export function headerWindow(source: string): HeaderWindow {
   const bytes = new Uint8Array(MARKER_HEADER_WINDOW_BYTES);
   const encoded = new TextEncoder().encodeInto(source, bytes);

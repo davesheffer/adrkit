@@ -70,7 +70,9 @@ describe('adr explain — inbound @adr markers', () => {
   test('--json separates firedMatchers from declaredBy and is byte-stable', async () => {
     const root = await resetTestDir(DIR_NAME);
     await corpus(root);
-    await writeText(join(root, 'src/sync/protocol.ts'), '// @adr 0002\nexport const protocol = 1;\n');
+    const source = '// @adr 0002\nexport const protocol = 1;\n';
+    await writeText(join(root, 'src/sync/protocol.ts'), source);
+    const bytes = new TextEncoder().encode(source).length;
 
     const first = await runAdr(['explain', 'src/sync/protocol.ts', '--dir', 'docs/adr', '--json'], root);
     const second = await runAdr(['explain', 'src/sync/protocol.ts', '--dir', 'docs/adr', '--json'], root);
@@ -97,6 +99,8 @@ describe('adr explain — inbound @adr markers', () => {
     expect(parsed.markers).toEqual({
       state: 'scanned',
       windowBytes: 8192,
+      scannedBytes: bytes,
+      fileBytes: bytes,
       truncated: false,
       declared: [{ ref: '0002', line: 1 }],
     });
@@ -174,16 +178,90 @@ describe('adr explain — inbound @adr markers', () => {
     });
   });
 
-  test('discloses that only the header window of a large file was scanned', async () => {
+  test('discloses how much of a large file was scanned, and of what total', async () => {
     const root = await resetTestDir(DIR_NAME);
     await corpus(root);
-    await writeText(join(root, 'src/sync/big.ts'), `// @adr 0002\n${'#'.repeat(9000)}\n`);
+    const source = `// @adr 0002\n${'#'.repeat(9000)}\n`;
+    await writeText(join(root, 'src/sync/big.ts'), source);
+    const bytes = new TextEncoder().encode(source).length;
 
     const result = await runAdr(['explain', 'src/sync/big.ts', '--dir', 'docs/adr'], root);
 
     expect(result.stdout).toContain('declared by src/sync/big.ts:1 (@adr 0002)');
+    // The single 9000-byte line cannot be cut anywhere inside the window, so the header
+    // line is the whole scanned extent — 13 bytes, not the 8192 the window suggests.
     expect(result.stdout).toContain(
-      'Note: only the first 8192 bytes of src/sync/big.ts were scanned for @adr markers.',
+      `Note: only the first 13 of ${bytes} bytes of src/sync/big.ts were scanned for @adr markers.`,
     );
+  });
+
+  /**
+   * Issue #108: `truncated: true` alone cannot say whether `declared` is complete, so a
+   * consumer had to treat every file over the window as indeterminate. The extent makes
+   * the coverage question answerable without knowing the window constant.
+   */
+  test('--json reports the scanned extent, so a hit window is not automatically unknown', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await corpus(root);
+    // Markers in the header, exactly where the docs recommend, in a file over the window.
+    const header = '// @adr 0002\n';
+    const body = `${'x'.repeat(200)}\n`.repeat(60);
+    await writeText(join(root, 'src/sync/large.ts'), `${header}${body}`);
+
+    const result = await runAdr(['explain', 'src/sync/large.ts', '--dir', 'docs/adr', '--json'], root);
+    const markers = JSON.parse(result.stdout).markers;
+
+    expect(markers.state).toBe('scanned');
+    expect(markers.declared).toEqual([{ ref: '0002', line: 1 }]);
+    expect(markers.truncated).toBe(true);
+    // The consumer's own policy is now expressible: bytes remain unscanned, and it can
+    // see how many rather than inheriting "indeterminate".
+    expect(markers.fileBytes).toBe(new TextEncoder().encode(`${header}${body}`).length);
+    // The exact extent, not a range: 13 header bytes plus as many whole 201-byte body
+    // lines as fit under 8192. A bound like `scannedBytes < fileBytes` is satisfied by
+    // any wrong smaller number, including the 13 a first-terminator cut would report.
+    expect(markers.scannedBytes).toBe(header.length + 201 * 40);
+    expect(markers.scannedBytes).toBeLessThan(markers.fileBytes);
+  });
+
+  test('--json omits the extent only for a path it never read', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await corpus(root);
+    await writeText(join(root, 'src/sync/present.ts'), '// @adr 0002\n');
+
+    const absent = await runAdr(['explain', 'src/sync/missing.ts', '--dir', 'docs/adr', '--json'], root);
+    const scanned = await runAdr(['explain', 'src/sync/present.ts', '--dir', 'docs/adr', '--json'], root);
+
+    // Asserted as exact key sequences, so this fails if the fields stop being reported,
+    // if they appear for a path nothing was read from, or if the block's key ORDER
+    // changes — `--json` is a byte contract, and a consumer may golden-diff it. Reporting
+    // `0` for an unread path would read as a measurement of an empty file.
+    expect(Object.keys(JSON.parse(absent.stdout).markers)).toEqual([
+      'state',
+      'windowBytes',
+      'truncated',
+      'declared',
+    ]);
+    expect(Object.keys(JSON.parse(scanned.stdout).markers)).toEqual([
+      'state',
+      'windowBytes',
+      'scannedBytes',
+      'fileBytes',
+      'truncated',
+      'declared',
+    ]);
+  });
+
+  test('the scan note is silent when the whole file was read', async () => {
+    const root = await resetTestDir(DIR_NAME);
+    await corpus(root);
+    await writeText(join(root, 'src/sync/small.ts'), '// @adr 0002\nexport const small = 1;\n');
+
+    const result = await runAdr(['explain', 'src/sync/small.ts', '--dir', 'docs/adr'], root);
+
+    // The note exists to disclose an incomplete read. On the common case — the whole file
+    // scanned — it would state a limit that did not apply, so its absence is the contract.
+    expect(result.stdout).toContain('declared by src/sync/small.ts:1 (@adr 0002)');
+    expect(result.stdout).not.toContain('were scanned for @adr markers');
   });
 });
