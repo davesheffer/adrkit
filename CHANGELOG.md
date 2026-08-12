@@ -9,6 +9,43 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Added
+
+- **Badges — corpus size and ARB queue depth — as recipes over output adrkit
+  already produces.** A new [badges guide](https://adrkit.dev/badges/) documents two
+  snippets, both rendering a number through shields.io from JSON your own repository
+  publishes: `$.checked` from `adr lint --json` for how many decisions are on
+  record, and `$.totalItems` from `adr queue --format json` for how many await
+  review ([ADR-0025](docs/adr/0025-ship-badges-as-recipes-over-existing-output.md)).
+  A static "uses adrkit" badge is deliberately not offered — it asserts something a
+  reader cannot check, and a count proves the same thing for the same cost. The
+  pass/fail badge for a workflow running `adr check` is documented too, but it is
+  GitHub's badge and works the same for any workflow.
+
+  **No new CLI surface and no service.** `adr queue --format json` already emits
+  `totalItems`, `asOf`, and `corpusFingerprint`, so an `adr badge` command would be
+  public API maintained forever to reformat a field that exists. A hosted endpoint
+  was refused separately: it would add an uptime dependency to every adopter's
+  README, put a computed surface on the origin ADR-0011 froze as static and
+  immutable, and make badge renders a de-facto record of who uses adrkit.
+
+  **adrkit publishes its own number as a site build artifact,** not as a committed
+  file: `site.yml` already rebuilds on `docs/adr/**`, so it emits
+  `site/public/queue.json` (gitignored, like the served schema), served at
+  `https://adrkit.dev/queue.json` for a badge to read. No workflow holds a write token and there
+  is no stored artifact to fall behind. The recipe published for adopters commits
+  the file instead, since most repositories have no site to piggyback on, and names
+  the alternatives for a protected default branch rather than shipping a snippet
+  that fails where nobody looks.
+
+  The recipe badges `$.totalItems` and nothing else, because queue *depth* is a pure
+  function of the corpus — `buildQueueReport` selects items by `status: proposed` —
+  while SLA state advances with the calendar. Depth therefore stays true when
+  regenerated on corpus change; a deadline-derived badge would need a scheduled
+  rebuild and a daily bot commit to avoid going quietly wrong. Adopters are pointed
+  at the queue Action for deadline pressure, since a badge cannot detect its own
+  staleness and an issue can notify.
+
 ## [0.6.0] - 2026-08-11
 
 ### Added

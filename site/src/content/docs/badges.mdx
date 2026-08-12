@@ -1,0 +1,247 @@
+---
+title: Badges
+description: Publish your corpus size and ARB queue depth as badges, from output adrkit already produces — without adding a service or a new command.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+adrkit ships no badge service and no `adr badge` command. Both badges below are a
+recipe over JSON adrkit already emits, rendered by shields.io and served from
+**your** repository ([ADR-0025](/adr/)).
+
+<Aside type="tip" title="Pick by what the badge claims">
+  A badge is only worth adding if a reader could check it. Both badges here
+  report a *number* you can verify by opening `docs/adr` — not a grade, and not
+  a claim about health. "This project uses adrkit" would be neither checkable
+  nor informative, so it is not offered.
+</Aside>
+
+<Aside type="note" title="Pass/fail is your CI provider's badge, not ours">
+  If you want a green/red badge for `adr check`, use the badge your CI already
+  publishes for the workflow that runs it — see [Corpus status
+  badge](#corpus-status-badge) below. adrkit contributes the two *numbers*; the
+  status badge is GitHub's and works the same for any workflow.
+</Aside>
+
+## Corpus size badge
+
+How many decisions are on record. This is the adoption signal with evidence
+behind it: a reader can click through and count them.
+
+Publish `adr lint --json` (see [Publish the reports](#1-publish-the-reports)
+below — the same workflow emits both files), then:
+
+```md
+[![ADRs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FOWNER%2FREPO%2Fmain%2F.adrkit%2Flint.json&query=%24.checked&label=ADRs&color=cb492d)](./docs/adr)
+```
+
+`$.checked` is every record the corpus contains, whatever its status — a
+superseded decision is still a decision that was recorded.
+
+## Corpus status badge
+
+The honest status badge already exists: run `adr check` in a workflow and use
+GitHub's own badge for it.
+
+```md
+[![ADRs](https://github.com/OWNER/REPO/actions/workflows/adr.yml/badge.svg?branch=main)](https://github.com/OWNER/REPO/actions/workflows/adr.yml)
+```
+
+Its claim is past-tense and attributable — *the last run of this workflow
+concluded X* — with the run, its date, and its logs one click away. That is the
+property to look for in any status badge, including the one below.
+
+## ARB queue depth badge
+
+How many decisions are awaiting review. This is the number no other tool can
+produce for you, and it comes straight from `adr queue`.
+
+### 1. Publish the reports
+
+Add a workflow that regenerates both reports whenever the corpus changes.
+Each file is the command's verbatim JSON — adrkit defines no badge format:
+
+```yaml
+# .github/workflows/adr-queue-badge.yml
+name: ADR queue badge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/adr/**'          # deliberately NOT .adrkit/**, or this re-triggers itself
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Pin actions by commit SHA, not by tag: a tag can be moved, and this job
+      # holds a token that can write to your default branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Pin the CLI version too. `npx @adrkit/cli` without a version resolves at
+      # run time, which puts whatever npm serves that day inside a write-capable job.
+      # Nothing will tell you when this pin ages — Dependabot does not read inline
+      # `npx` versions — so bump it when you upgrade. This page always shows the
+      # current release.
+      - run: |
+          mkdir -p .adrkit
+          npx @adrkit/cli@0.6.0 queue --format json > .adrkit/queue.json.tmp
+          npx @adrkit/cli@0.6.0 lint --json  > .adrkit/lint.json.tmp
+
+      # A truncated or malformed write renders as `no result` on the badge, which
+      # reads as a bug in your tooling. Fail here instead of committing it.
+      - name: Validate before publishing
+        run: |
+          # `type(x) is int`, not isinstance: bool subclasses int in Python, so
+          # isinstance would accept `{"totalItems": true}` as valid.
+          python3 -c "import json,sys; d=json.load(open('.adrkit/queue.json.tmp')); sys.exit(0 if type(d.get('totalItems')) is int else 'totalItems missing')"
+          python3 -c "import json,sys; d=json.load(open('.adrkit/lint.json.tmp'));  sys.exit(0 if type(d.get('checked'))    is int else 'checked missing')"
+          mv .adrkit/queue.json.tmp .adrkit/queue.json
+          mv .adrkit/lint.json.tmp  .adrkit/lint.json
+
+      - name: Commit when the report changed
+        run: |
+          # `git diff` alone cannot see an untracked file, so on the very first
+          # run it would report "no change" and never publish anything. Compare
+          # against HEAD, and stage the path explicitly — `commit -am` does not
+          # stage a new file, and would sweep in unrelated tracked edits.
+          git add .adrkit/queue.json .adrkit/lint.json
+          if git diff --cached --quiet -- .adrkit; then
+            echo "Reports unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(adr): refresh corpus reports [skip ci]'
+          git push
+```
+
+<Aside type="caution" title="If your default branch is protected">
+  This workflow pushes directly to your default branch. If that branch requires
+  status checks or pull requests, the push is **rejected** — and the failure is
+  only visible in the Actions tab. Change the last step to one of these:
+
+  **Push to a dedicated branch instead** (simplest). Replace the `git push` line
+  in the last step with:
+
+  ```yaml
+          git push origin HEAD:refs/heads/adr-artifacts --force
+  ```
+
+  `--force` is deliberate here: `adr-artifacts` holds only generated output, is
+  never merged, and is rewritten from `main` on every run. Do not point it at a
+  branch anyone commits to. Then, in step 2, change the branch inside the badge
+  URL — it appears percent-encoded as `%2Fmain%2F`, so `main` becomes
+  `adr-artifacts` there.
+
+  **Open a pull request instead** (keeps the change reviewable). Add
+  `pull-requests: write` to the job's `permissions:` block, then replace the
+  whole final step with:
+
+  ```yaml
+      - name: Publish the report as a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add .adrkit/queue.json .adrkit/lint.json
+          if git diff --cached --quiet -- .adrkit; then
+            echo "Reports unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(adr): refresh ARB queue report'
+          # No --force: the branch may carry review commits, and overwriting them
+          # silently is worse than a failed run you can see.
+          git push -u origin HEAD:adr-queue-refresh
+          # Only create a PR when one is not already open for this branch.
+          if [ -z "$(gh pr list --head adr-queue-refresh --state open --json number --jq '.[0].number')" ]; then
+            gh pr create --fill --head adr-queue-refresh
+          fi
+  ```
+
+  Note the `env:` key sits beside `run:` at step level, not inside the script.
+
+  **Grant the bot a protection bypass** — least preferable, since it weakens the
+  protection for everything else too.
+
+  adrkit itself takes a fourth route that needs no token at all: its docs site
+  already rebuilds on corpus changes, so it emits `queue.json` as a build
+  artifact and the badge reads `https://adrkit.dev/queue.json`. If you publish a
+  site from the same repository, that is the simplest option available to you —
+  see the `site:queue` script and the emit step in `.github/workflows/site.yml`
+  in [this repository](https://github.com/mbeacom/adrkit) for a working example.
+</Aside>
+
+### 2. Point a badge at it
+
+```md
+[![ARB queue](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FOWNER%2FREPO%2Fmain%2F.adrkit%2Fqueue.json&query=%24.totalItems&label=ARB%20queue&suffix=%20pending&color=cb492d)](./docs/adr)
+```
+
+Replace `OWNER/REPO`, plus the branch and path if you changed them. A wrong URL
+renders `resource not found` and a wrong query renders `no result`, so a mistake
+is visible rather than silently wrong — but note that a *correct* URL renders
+`resource not found` too when the workflow has not published the file yet. Check
+the workflow before you suspect the URL.
+
+<Aside type="note" title="What this discloses">
+  A `dynamic/json` badge asks shields.io to fetch your JSON, so the URL carries
+  your owner, repository, and branch to a third party on every render. That is a
+  reasonable trade for most public repositories, but it is a choice, and it is
+  the reason the adoption badge above is also offered as a file you can commit.
+
+  The published `queue.json` also carries each queued record's `deciders` as
+  routing targets, alongside its title and source path. Those come from your ADR
+  frontmatter and are already in your corpus, but committing them to a public
+  repository puts them at a URL a badge service can cache — worth a look before
+  you enable this if your `deciders` are not public handles.
+</Aside>
+
+### Why depth, and not deadlines
+
+Queue **depth** depends only on the corpus: `adr queue` selects items whose
+status is `proposed`. **SLA state** depends on the calendar — an item crosses its
+deadline with no commit at all. A badge over deadlines would therefore need a
+scheduled rebuild, producing a bot commit every day whether or not anything
+happened, and would quietly go wrong between rebuilds. Depth costs one workflow
+run per corpus change and stays true between them.
+
+If you want deadline pressure surfaced, use the
+[queue Action](/ci/#publish-the-arb-operations-queue) instead — it maintains a
+GitHub issue that people actually receive notifications about.
+
+<Aside type="caution" title="A badge cannot detect its own staleness">
+  If the workflow above is deleted, disabled, or starts failing its push,
+  `.adrkit/queue.json` keeps its last value and the badge keeps rendering it.
+  Nothing written at generation time can know it has gone stale — only a reader
+  can.
+
+  The [corpus status badge](#corpus-status-badge) does **not** cover this: it
+  reports the workflow that runs `adr check`, which never touches the queue
+  report and stays green while the queue badge rots. The signal that actually
+  covers regeneration is a status badge for the badge workflow *itself*:
+
+  ```md
+  [![ARB queue badge](https://github.com/OWNER/REPO/actions/workflows/adr-queue-badge.yml/badge.svg?branch=main)](https://github.com/OWNER/REPO/actions/workflows/adr-queue-badge.yml)
+  ```
+
+  Even that reports only runs that started — a workflow GitHub disabled for
+  inactivity reports nothing at all.
+</Aside>
+
+## What adrkit will not do
+
+- **No hosted badge endpoint.** It would add an uptime dependency to your README,
+  put a computed surface on the origin that serves the canonical schema, and make
+  badge renders a de-facto record of who uses adrkit.
+- **No `adr badge` command.** `adr queue --format json` already emits
+  `totalItems`; a command that reformatted it would be public API to maintain
+  forever for no added truth.

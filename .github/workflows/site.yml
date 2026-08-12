@@ -10,19 +10,24 @@ name: Deploy site
 # other.
 
 on:
+  # No `paths` filter on push. The site now serves `queue.json` and `lint.json`,
+  # which are projections of `main` produced by the CLI — so the deploy must
+  # re-run when the *projector* changes, not only when the corpus does.
+  # Enumerating the generator's dependencies (`packages/core/src/queue/**`,
+  # `load/**`, `validate/**`, the CLI entrypoint…) is fragile: one missed path
+  # leaves adrkit.dev serving numbers from an older implementation, silently.
+  # Deploying on every push to main is the only filter that cannot miss one.
   push:
     branches: [main]
-    paths:
-      - 'site/**'
-      - 'schema/adr.schema.json'
-      - 'docs/adr/**'
-      - '.github/workflows/site.yml'
   pull_request:
     paths:
       - 'site/**'
       - 'schema/adr.schema.json'
       - 'docs/adr/**'
       - '.github/workflows/site.yml'
+      # The docs pin the released CLI version; a release bump must re-run that
+      # guard in the same push rather than failing the next unrelated change.
+      - 'package.json'
   workflow_dispatch:
 
 # Least-privilege baseline. Pages deploy privileges are scoped to the deploy job.
@@ -59,6 +64,51 @@ jobs:
 
       - name: Guard — served schema byte-identical to canonical + no stale doc versions
         run: bun run check:schema
+
+      # The ARB queue badge on the README reads this file over HTTP. It is
+      # derived from the corpus at build time and never committed, so it cannot
+      # go stale between corpus changes — the same discipline as the served
+      # schema above (ADR-0025). `site` is deliberately not a workspace member,
+      # so the projection runs from the repo root rather than making the site
+      # depend on `@adrkit/core`.
+      #
+      # `adr lint --json` and `adr queue --format json` both document exit 1 as
+      # "report emitted, with error-severity findings" — the report is complete
+      # and publishable. A corpus problem, and equally a tool regression
+      # (exit >= 2), must not stop this job from deploying the canonical schema
+      # at its `$id` (ADR-0011). A badge degrades to a missing file; the schema
+      # always ships. Both artifacts are the commands' verbatim output — no
+      # bespoke badge format (ADR-0025).
+      - name: Emit the corpus reports for the badges
+        working-directory: .
+        run: |
+          bun install --frozen-lockfile
+          # `key` is the field the badge actually reads. Validating only that the
+          # file parses would let a structurally valid but wrong report through,
+          # and the badge would render `no result` as if adrkit were broken.
+          # `type(x) is int` rather than `isinstance`: bool subclasses int, so
+          # isinstance would accept `{"totalItems": true}`.
+          publish () {
+            name="$1"; key="$2"; shift 2
+            set +e
+            "$@" > "/tmp/${name}.json"
+            status=$?
+            set -e
+            if [ "$status" -ge 2 ]; then
+              echo "::warning::${name}: exited ${status}; publishing the site without ${name}.json"
+              return 0
+            fi
+            if [ "$status" -eq 1 ]; then
+              echo "::warning::${name}: corpus has error-severity findings; the report is complete and is being published"
+            fi
+            if ! python3 -c "import json,sys; d=json.load(open('/tmp/${name}.json')); sys.exit(0 if type(d.get('${key}')) is int else 1)" 2>/dev/null; then
+              echo "::warning::${name}: report is unreadable or has no integer ${key}; publishing the site without ${name}.json"
+              return 0
+            fi
+            cp "/tmp/${name}.json" "site/public/${name}.json"
+          }
+          publish queue totalItems bun packages/cli/src/index.ts queue --format json
+          publish lint  checked    bun packages/cli/src/index.ts lint --json
 
       - name: Build site
         run: bun run build
