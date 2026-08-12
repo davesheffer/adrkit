@@ -11,6 +11,42 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ### Added
 
+- **DCO sign-off is enforced, not just documented** ([ADR-0006](docs/adr/0006-license-apache-2-and-single-monorepo.md)
+  action item 2, #130). A `dco` job checks every commit a pull request adds and is a
+  required status check on `main`. Sign-off was practiced by every contributor and
+  required by both `CONTRIBUTING.md` and the PR template, but no ruleset check
+  enforced it — the control was honor-system, and an unsigned commit would have
+  merged.
+
+  **A repository script (`scripts/check-dco.ts`), not the [DCO app](https://github.com/apps/dco),**
+  so the gate stays inside the surface [ADR-0007](docs/adr/0007-adapter-isolation-and-public-surface-build.md)
+  keeps mechanical and self-contained rather than adding a third-party app to the IP
+  boundary. It imports only Node builtins and runs with no `bun install`, so a broken
+  dependency graph cannot take the sign-off gate down with it. Accept/reject semantics
+  track the app's, because that is the contract contributors already know, with two
+  deliberate differences: a sign-off's **name and address must come from one identity**
+  (the app takes the name from either the author or the committer and the address from
+  either, so a web-UI commit signed `Jane Doe <noreply@github.com>` passes there), and
+  a **bot still has to sign** — app accounts are exempt from the *address* half only,
+  because Dependabot signs from `support@github.com` and cannot equal its own author
+  address by construction, but the trailer must still name the bot. Every exemption is
+  named in the job output, so a commit is never skipped silently.
+
+  **The squash-merge body setting moved from `BLANK` to `COMMIT_MESSAGES`.** A
+  pull-request check certifies the *contributor*, which is what the DCO is for, but a
+  blank squash body discards every trailer at merge: `main`'s own head (`f74c089`)
+  carried no sign-off while every commit proposed to it carried one. ADR-0006 traded
+  away commercial leverage for provenance, and provenance that is verified and then
+  thrown away at merge is not provenance.
+
+  Observed rejecting a real unsigned commit in a real repository before it counted as
+  coverage ([ADR-0016](docs/adr/0016-require-every-check-to-be-observed-failing-before-it-counts-as-coverage.md)).
+  The negative cases are permanent in `scripts/check-dco.test.ts`, including the one
+  that matters most for this class of check: **an empty commit range is an error, not
+  a pass.** An unfetched or misspelled base ref makes `git log` return nothing and
+  drives every count in the report to zero, which renders identically to a clean run —
+  the exact fail-quiet shape ADR-0016 exists to prevent.
+
 - **Badges — corpus size and ARB queue depth — as recipes over output adrkit
   already produces.** A new [badges guide](https://adrkit.dev/badges/) documents two
   snippets, both rendering a number through shields.io from JSON your own repository
@@ -72,8 +108,10 @@ Until `1.0.0`, minor releases may include breaking changes
   trail says when the decision was taken and by whom rather than leaving `status`
   to carry it alone. Stale action-item checkboxes were corrected to match verified
   reality; items that are genuinely open were left unchecked, including ADR-0006's
-  DCO bot, which is documented in CONTRIBUTING.md but which no ruleset check
-  enforces, ADR-0008's re-import pull request, which is unbuilt because non-MADR
+  DCO bot, which CONTRIBUTING.md required but which no ruleset check enforced at the
+  time of that ratification — closed later in this same release by the DCO gate
+  described above — ADR-0008's re-import pull request, which is unbuilt because
+  non-MADR
   re-import is unbuilt, and ADR-0009's catalog port item — the port type exists but
   no adapter implementation ships, since `catalog-backstage` is placement and
   dependency boundary only. Ratification rests on the resolution semantics, which
