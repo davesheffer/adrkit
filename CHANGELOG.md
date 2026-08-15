@@ -9,6 +9,154 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Added
+
+- **The comment-posting Action now has an end-to-end signal**
+  ([ADR-0026](docs/adr/0026-identify-the-ci-comment-by-the-strongest-author-evidence-the-token-allows.md)
+  action item 9, #135). `self-dogfood` runs the **CLI** with `contents: read`, so it never
+  constructed a GitHub client, resolved an identity, or posted a comment — the surface
+  #107 lived in had no coverage before it shipped to every adopter pinned at the moving
+  `v0` tag. That is how #107 survived two releases: every suite was green, and the job
+  log it printed (`adrkit: created the governing-decisions comment.`) is what healthy
+  operation prints.
+
+  **A new `action-dogfood` job** runs `uses: ./packages/ci` **twice** against the
+  repository's own pull requests and asserts, over the API, that exactly one comment
+  leads with `<!-- adrkit:ci -->` and that a Bot authored it. It is gated on
+  `clean-clone-builds` so it cannot pass over a stale committed bundle, and serialized
+  per pull request so two concurrent runs cannot both create and fail a correct Action.
+  The assertion also runs *between* the two dispatches, on a bounded retry, as a
+  read-your-writes barrier — GitHub can serve the comment list from a replica, and a
+  second dispatch that listed before the first comment became visible would create a
+  duplicate and fail a healthy Action. This is the only job in the repository with a
+  write capability (`pull-requests: write`), scoped to one job rather than raised at the
+  workflow level.
+
+  **`exactly one`, not `at most one`.** An empty comment list satisfies "at most one",
+  and an empty list is what a revoked permission, a wrong pull-request number, and a
+  silently-degraded Action all produce — the blind-pass shape
+  [ADR-0016](docs/adr/0016-require-every-check-to-be-observed-failing-before-it-counts-as-coverage.md)
+  exists to prevent. Three cross-checks close the remaining blind spots: the list is
+  compared against the comment count GitHub reports for the issue, so a lost
+  `--paginate` cannot hide a duplicate on page two; the surviving comment's **id** is
+  compared across dispatches, so a count of one cannot be satisfied by a replacement;
+  and the ids owned **before** the run are recorded, so a duplicate the pull request
+  already carried is not reported as a fresh regression. Ownership requires a **bot
+  author** as well as a leading marker, matching the Action's own rule — without that,
+  anyone able to comment could red the check with one invisible line. The gate is
+  `scripts/check-ci-comment.ts`, which imports only builtins, reports every marked
+  comment it examined rather than only its verdict, and ships permanent negative
+  fixtures for the duplicate (#107), absent, empty, human-authored, and impostor shapes,
+  each observed rejecting.
+
+  **What it does not cover, stated rather than implied.** After a pull request's first
+  push the comment already exists, so a dispatch that writes nothing satisfies both
+  assertions. The inverse of #107 is therefore caught on every newly-opened pull
+  request's first run and not on later pushes within one pull request; the rung-2
+  artifact covers the create-then-update pair from a clean state. Adding an Action
+  output to close it was rejected — expanding a published contract to serve a test is
+  the wrong direction, and a self-report is the evidence #107 already defeated.
+
+  **Fork and Dependabot pull requests are excluded**, because their `GITHUB_TOKEN` is
+  read-only whatever `permissions:` declares — the Action correctly degrades to a log
+  notice (FR-014) and posts nothing, so the assertion would fail a healthy Action.
+  `pull_request_target` would close that blind spot by running base-repo workflows with
+  a write token against fork-authored code, and was rejected outright.
+
+- **The rung-2 reference run happened, and closed [ADR-0026](docs/adr/0026-identify-the-ci-comment-by-the-strongest-author-evidence-the-token-allows.md)
+  action item 8.** Three scenarios green on
+  [`adrkit-t018-dogfood#16`](https://github.com/mbeacom/adrkit-t018-dogfood/pull/16)
+  against adrkit pinned at `71f46d6`. The Action logged `created` then `updated` with the
+  comment id unchanged at `#5289930628` from a clean start; a plain file as `dir` failed
+  the step with `ENOTDIR` leaving the comment set byte-identical; and a
+  `pull-requests: read` token produced the FR-014 degrade — a log notice, a green job,
+  nothing written. That degrade path had **never been observed anywhere**; it had only
+  ever been read from source. A reviewer verdict is still outstanding, so the comment
+  path is `implemented`, not yet `reference-verified`.
+
+  **Running it found four defects in the artifact, all invisible to static review.**
+  `path: .adrkit` deleted the contents of a directory the reference repository tracks
+  (now `.adrkit-src`, the name that repo already reserves); a second workflow posting the
+  same marker silently *weakens* a run rather than failing it, because a foreign comment
+  satisfies the `absent` rule — the first attempt was green having observed two updates
+  and no create; `degrade-read-only` never echoed its outcome, so that evidence row had
+  to be read from the REST API; and `--paginate` with `join(",")` inside `--jq` emits one
+  line per page, which would hand `--expect-ids` a multi-line value past 30 comments —
+  reproduced against the labels endpoint and fixed in **`action-dogfood` too**, which
+  carried the same defect. A run against the corrected artifact confirmed all four fixes
+  and is the cited evidence — an artifact fixed after its own verification run is an
+  unverified artifact.
+
+  **A fifth defect was in the instructions, and it caused a real failure.** The README
+  said to delete the marker comment *before* pushing. That removes the accidental
+  protection a pre-existing comment provides — it makes a second writer *update* rather
+  than create — so both the verification workflow and the reference repository's own
+  `adr.yml` listed an empty set and both created, within the same second, producing
+  consecutive comment ids and a failed run that blamed #107 for an Action that had
+  behaved correctly. The order is now push → settle → delete → `gh run rerun`, which
+  excludes the race structurally, because a re-run does not re-trigger other workflows.
+
+  That failure is also the first time the `duplicate` rule has been observed **firing**
+  outside a fixture, which closes an ADR-0016 gap the evidence index had recorded as
+  open. It exposed a sixth defect in passing: the message asserted "a dispatch in this
+  run created rather than updated — the regression of #107" when a concurrent writer was
+  responsible. `--expect-ids` separates *predates this run* from *created during it*, but
+  not *created by this run* from *created by another writer*, so the message now names
+  both causes and points at the Action's own log, which does distinguish them.
+
+  It also produced a claim that had to be withdrawn, which is worth recording because the
+  withdrawal is the useful part. `updated_at` did not move across either in-place update,
+  and that was generalised into "GitHub does not bump `updated_at` for a byte-identical
+  PATCH" on the strength of a probe in one context. It does not hold in another: on
+  `mbeacom/openleague`, three same-commit re-runs with a SHA-256-identical body advanced
+  it every time. A second explanation — the actor — was then offered and is also wrong,
+  contradicted by the evidence table it sat beside: the unchanged and advanced bot rows
+  are the same actor. Endpoint and elapsed time are ruled out by measurement. **The
+  mechanism is not established**, and is left unexplained rather than given a third
+  plausible story. The gate asserts **id
+  stability** rather than `updated_at`, and that choice never depended on the direction —
+  only on the field being uncontractual, which two contradicting contexts evidence better
+  than either result alone.
+
+- **A second review found the retry loops were decorative, and the fix is `--just-wrote`.**
+  The read-your-writes race the loops exist for — a comment created moments ago and not
+  yet visible on a read replica — produces the `absent` rule, not `incomplete`. With
+  `absent` permanently definitive, the checker exited 1 and the workflow killed the step
+  on attempt 1, so the loops could only ever retry the lost-`--paginate` class, which
+  retrying cannot fix. Reproduced before fixing: `check-ci-comment empty.json
+  --expect-total=1` exited 1, not 2. `--just-wrote` now marks `absent` retryable for a
+  caller that dispatched a write immediately beforehand, and definitive otherwise —
+  a duplicate or a changed id stays fatal either way, by test.
+
+  Also from that review: every `gh api` read is now soft, not just the ones in the first
+  loop (a single 502 killed the step the loop was built to survive); comment counts are
+  validated as decimal integers before `$(( ))`, which read a non-numeric value as a
+  variable name and silently disabled the completeness check at zero; the `prior-ids` jq
+  filter splits on all three line terminators, matching the classifier rather than being a
+  fourth place that decides ownership differently; retries use exponential backoff to 75s,
+  since a secondary rate limit is answered with a `Retry-After` well past a flat 25s; and
+  the job gained `timeout-minutes: 10`, because a hung request would otherwise leave a
+  required check Pending for six hours — the one state with no notification and no log.
+
+  **`cancel-in-progress` is now `false`**, matching `release.yml` and the reference
+  workflow. This job was the odd one out at `true` while the reference file argued the
+  opposite in writing, for the same write to the same comment — both files written here.
+  Cancellation is a signal plus a grace period, so a cancelled dispatch can still be
+  mid-create when its replacement lists an empty set and creates its own, and the
+  resulting duplicate is non-retryable and needs a human to delete a comment.
+
+- **A runnable rung-2 reference-repository artifact for the comment path**
+  (`specs/004-ci-surface/evidence/reference-repo/`). It calls the Action as a consumer
+  does — `uses: mbeacom/adrkit/packages/ci@<sha>` — and covers two scenarios the
+  in-repository job structurally cannot: a fail-closed dispatch against an invalid
+  corpus directory that must write nothing, and the FR-014 degrade under
+  `pull-requests: read` that must stay green. Shipped as a workflow file rather than as
+  a task, per ADR-0016 clause 4 — it is the mechanism for ADR-0026 action item 8, which
+  stays open until it is run. Its evidence index
+  (`specs/004-ci-surface/checklists/reference-verification-evidence.md`) is created
+  **empty and explicitly `NOT YET OBSERVED`**: the comment path remains `implemented`,
+  not `reference-verified`, until a real run fills it in.
+
 ## [0.7.0] - 2026-08-12
 
 ### Added
