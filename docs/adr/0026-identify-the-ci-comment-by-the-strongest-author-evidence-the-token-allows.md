@@ -335,9 +335,10 @@ have one.
    [`specs/004-ci-surface/checklists/reference-verification-evidence.md`](../../specs/004-ci-surface/checklists/reference-verification-evidence.md);
    the artifact that produced it is
    [`specs/004-ci-surface/evidence/reference-repo/`](../../specs/004-ci-surface/evidence/reference-repo/README.md).
-   **A reviewer verdict is still outstanding**, and ADR-0014 rung 2 requires the evidence
-   to be reviewed, so the comment path remains `implemented` and is not yet
-   `reference-verified`.
+   **Reviewed and passed by `@mbeacom` on 2026-08-15**, which is the last of ADR-0014's
+   four rung-2 criteria, so the comment path is now **landed / reference-verified** on
+   rungs 1–2. It is **not** `externally validated`: the reference repository is
+   maintainer-owned, so rung 3 stays absent.
 
    Three things the run established that reading could not:
 
@@ -489,24 +490,28 @@ have one.
    deleting the prior comment before each run, which would notify every subscriber on
    every push. Stated as a bounded limitation rather than closed badly.
 
-   Still open: making `action-dogfood` a required check on the `main` ruleset, which
-   cannot happen until it has run green at least once, since it skips on the pull
-   requests that cannot satisfy it. Three operational facts belong with that step, because
-   all three live in repository settings rather than in this repository:
+   **Done 2026-08-15**: `action-dogfood` is a required status check on the `main` ruleset,
+   added after it had run green on several commits of #143 — it could not be added before
+   that, since it skips on the pull requests that cannot satisfy it. Three operational
+   facts belong with it, because all three live in repository settings rather than in this
+   repository:
 
    - The check is named by the **job id `action-dogfood`**, so renaming or relocating that
      job leaves every pull request waiting on a check that will never report, which only
      an administrator can clear.
    - Disabling the gate means removing it from the ruleset, not editing `ci.yml`, since a
      workflow edit lands in the same pull request the gate is blocking.
-   - **`clean-clone-builds` must be made required in the same edit.** `action-dogfood`
-     declares `needs: clean-clone-builds`, and a job skipped because its dependency failed
-     is reported exactly like one skipped by an `if:` — as success. So a pull request whose
-     build fails would satisfy the comment gate without the Action ever having run, which
-     is this record's own blind spot reopened through a mechanism nobody would be watching.
-     Dropping `needs` is not the alternative: the bundle-drift check it waits for is only
-     meaningful after `bun run build`, so removing the dependency would mean rebuilding
-     inside this job. Raised by the second operator review.
+   - **`clean-clone-builds` must stay required for this gate to mean anything.**
+     `action-dogfood` declares `needs: clean-clone-builds`, and a job skipped because its
+     dependency failed is reported exactly like one skipped by an `if:` — as success. So a
+     pull request whose build fails would satisfy the comment gate without the Action ever
+     having run, which is this record's own blind spot reopened through a mechanism nobody
+     would be watching. The second operator review raised this conditionally, not knowing
+     the ruleset; it was then checked, and `clean-clone-builds` **is already required**, so
+     the hole is closed today. It is recorded because the coupling is invisible from either
+     side: removing `clean-clone-builds` from the ruleset would silently weaken this gate,
+     and nothing in `ci.yml` says so. Dropping `needs` is not the alternative either — the
+     bundle-drift check it waits for is only meaningful after `bun run build`.
 10. [ ] **Deferred, tracked separately.** `v0` is a moving tag with no documented
     rollback, so recovering from a bad Action release depends on a maintainer knowing
     to force-move it by hand.
