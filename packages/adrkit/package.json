@@ -1,14 +1,14 @@
 {
-  "name": "@adrkit/cli",
+  "name": "adrkit",
   "version": "0.7.0",
-  "description": "Git-native architecture decision record tooling from adrkit.",
+  "description": "The adrkit CLI under its unscoped name — forwards to @adrkit/cli.",
   "type": "module",
   "license": "Apache-2.0",
   "homepage": "https://adrkit.dev",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mbeacom/adrkit.git",
-    "directory": "packages/cli"
+    "directory": "packages/adrkit"
   },
   "bugs": {
     "url": "https://github.com/mbeacom/adrkit/issues"
@@ -26,7 +26,6 @@
     "access": "public"
   },
   "bin": {
-    "adr": "./dist/index.js",
     "adrkit": "./dist/index.js"
   },
   "exports": {
@@ -38,15 +37,13 @@
     }
   },
   "scripts": {
-    "adr": "bun ./src/index.ts",
     "build": "rm -rf dist && bun build ./src/index.ts --target=node --outdir=dist --packages=external && tsc --project tsconfig.build.json && bun ../../scripts/normalize-dts-imports.ts dist && cp ../../LICENSE ../../NOTICE dist/ && chmod +x dist/index.js",
     "lint": "bun run typecheck",
     "prepack": "bun run build",
     "typecheck": "tsc --noEmit --customConditions bun --project ../../tsconfig.json"
   },
   "dependencies": {
-    "@adrkit/core": "workspace:*",
-    "@adrkit/evaluator": "workspace:*"
+    "@adrkit/cli": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest"
