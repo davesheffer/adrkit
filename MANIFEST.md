@@ -13,6 +13,7 @@ adrkit/
 ├── plan.md                        active planning and open questions
 ├── MANIFEST.md                    this file
 ├── DESIGN.md  PRODUCT.md          design and product framing
+├── Containerfile  .dockerignore   OCI build and minimal context
 ├── .gitignore  .editorconfig
 ├── bunfig.toml  .bun-version      Bun development toolchain; isolated linker
 ├── .github/workflows/             CI workflows
@@ -55,6 +56,8 @@ adrkit/
 
 - The ADR corpus lives in [docs/adr/](docs/adr/), with `0000-template.md` plus
   numbered records.
+- There are 33 files: the template plus 32 records, ids `0001`-`0032`, with 30
+  accepted and 2 superseded records.
 - The schema source of truth lives in
   `packages/core/src/schema/adr.schema.ts`.
 - `schema/adr.schema.json` is generated from that source and hosted at the
