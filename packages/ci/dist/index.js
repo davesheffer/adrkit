@@ -48622,6 +48622,8 @@ var HISTORY_HEADING = "#### Historical records that once covered this change";
 var HISTORY_NOTE = "These no longer bind this change, and are listed for context only:";
 var MAX_GOVERNING = 50;
 var MAX_DECLARATIONS = 10;
+var MAX_MARKER_PATHS_PER_STATE = 10;
+var MAX_MARKER_CLAIMS = 20;
 var MAX_COMMENT_CHARS = 65536;
 var TRUNCATION_NOTICE = "- …output truncated to fit GitHub’s comment size limit; run `adr check` locally for the complete result.";
 var MAX_FINDING_FIELD_CHARS = 256;
@@ -48650,6 +48652,51 @@ function renderFindingLine(finding) {
   const field = finding.field ? ` (${code(boundedDetail(finding.field, MAX_FINDING_FIELD_CHARS, "field"))})` : "";
   const message = boundedDetail(finding.message, MAX_FINDING_MESSAGE_CHARS, "message");
   return `- ${where} — ${code(finding.rule)}${field}: ${message}`;
+}
+function markerScanHealthLines(report) {
+  const states = [
+    ["absent", report.absentPaths],
+    ["unreadable", report.unreadablePaths],
+    ["out-of-tree", report.outOfTreePaths],
+    ["skipped at the scan cap", report.skippedPaths]
+  ];
+  const unavailable = states.reduce((total, [, paths]) => total + paths.length, 0);
+  if (unavailable === 0)
+    return [];
+  const lines = [
+    "#### Marker scan health",
+    "",
+    `Marker scanning could not inspect ${unavailable} changed file${unavailable === 1 ? "" : "s"}:`
+  ];
+  for (const [label, paths] of states) {
+    if (paths.length === 0)
+      continue;
+    const shown = paths.slice(0, MAX_MARKER_PATHS_PER_STATE).map(code).join(", ");
+    const remaining = paths.length - Math.min(paths.length, MAX_MARKER_PATHS_PER_STATE);
+    lines.push(`- ${paths.length} ${label}: ${shown}${remaining > 0 ? `, and ${remaining} more` : ""}`);
+  }
+  lines.push("", "These files could not be inspected for `@adr` markers; an empty result does not prove that no marker is present.");
+  return lines;
+}
+function markerClaimLines(outcome) {
+  const changed = new Set(outcome.changedFiles);
+  const claims = outcome.findings.filter((finding) => finding.field === "marker" && finding.path !== undefined && changed.has(finding.path) && finding.rule !== "marker-scan-capped");
+  if (claims.length === 0)
+    return [];
+  const shown = claims.slice(0, MAX_MARKER_CLAIMS);
+  const lines = [
+    "#### Marker claims not bound",
+    "",
+    "Marker scanning was healthy for these changed files, but the claims did not bind to a record in this corpus:"
+  ];
+  for (const finding of shown) {
+    lines.push(`- ${code(finding.path ?? "(unknown)")} — ${code(boundedDetail(finding.message, MAX_FINDING_MESSAGE_CHARS, "message"))}`);
+  }
+  const remaining = claims.length - shown.length;
+  if (remaining > 0) {
+    lines.push(`- …and ${remaining} more marker claim${remaining === 1 ? "" : "s"}`);
+  }
+  return lines;
 }
 function renderDecisionLines(decision, withStatus) {
   const status = withStatus ? ` _(${decision.status})_` : "";
@@ -48707,6 +48754,14 @@ function renderComment(outcome) {
     for (const finding of errors4)
       lines.push(renderFindingLine(finding));
     lines.push("");
+  }
+  if (outcome.markerScan) {
+    const markerAdvisories = [
+      ...markerScanHealthLines(outcome.markerScan),
+      ...markerClaimLines(outcome)
+    ];
+    if (markerAdvisories.length > 0)
+      lines.push(...markerAdvisories, "");
   }
   if (outcome.governedBy.length === 0) {
     lines.push(EMPTY_STATE);

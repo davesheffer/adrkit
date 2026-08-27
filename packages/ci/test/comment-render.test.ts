@@ -79,22 +79,116 @@ describe('renderComment', () => {
     expect(body).not.toContain('**0002**');
   });
 
-  test('keeps marker reference warnings out of the focused PR comment', async () => {
+  test('separates marker scan health from the empty governing state', async () => {
     const root = await seed();
-    const outcome = await outcomeFor(root, ['docs/adr/0001-api.md']);
-    outcome.findings.push({
-      rule: 'dangling-marker',
-      severity: 'warn',
-      message: 'Source marker does not resolve',
-      path: 'docs/adr/0001-api.md',
-      field: 'marker',
-      pattern: '9999',
-    });
+    const outcome = await outcomeFor(root, ['src/a.ts']);
+    outcome.markerScan = {
+      totalCandidates: 1,
+      limit: 3000,
+      counts: { scanned: 0, absent: 1, unreadable: 0, 'out-of-tree': 0, truncated: 0, skipped: 0 },
+      absentPaths: ['src/a.ts'],
+      unreadablePaths: [],
+      outOfTreePaths: [],
+      truncatedPaths: [],
+      skippedPaths: [],
+    };
 
     const body = renderComment(outcome);
 
-    expect(body).not.toContain('dangling-marker');
-    expect(body).not.toContain('Source marker does not resolve');
+    expect(body).toContain(
+      'no marker is present.\n\nNo governing decisions for the changed files.',
+    );
+  });
+
+  test('reports a dangling marker after a healthy scan without making it blocking', async () => {
+    const root = await seed();
+    const outcome = await outcomeFor(root, ['src/owned.ts']);
+    outcome.findings.push({
+      rule: 'dangling-marker',
+      severity: 'warn',
+      message: 'Source marker "@adr 9999" in src/owned.ts:1 does not resolve to a record in the corpus',
+      path: 'src/owned.ts',
+      field: 'marker',
+      pattern: '9999',
+    });
+    outcome.markerScan = {
+      totalCandidates: 1,
+      limit: 3000,
+      counts: { scanned: 1, absent: 0, unreadable: 0, 'out-of-tree': 0, truncated: 0, skipped: 0 },
+      absentPaths: [],
+      unreadablePaths: [],
+      outOfTreePaths: [],
+      truncatedPaths: [],
+      skippedPaths: [],
+    };
+
+    const body = renderComment(outcome);
+
+    expect(body).toContain('#### Marker claims not bound');
+    expect(body).toContain('src/owned.ts');
+    expect(body).toContain('@adr 9999');
+    expect(body).not.toContain('#### Marker scan health');
+  });
+
+  test('reports files the marker scan could not inspect, with bounded safe paths', async () => {
+    const root = await seed();
+    const outcome = await outcomeFor(root, ['src/a.ts']);
+    const paths = Array.from({ length: 12 }, (_, index) => `src/${index}-\`[x](https://evil.example).ts`);
+    outcome.changedFiles = paths;
+    outcome.markerScan = {
+      totalCandidates: paths.length,
+      limit: 3000,
+      counts: { scanned: 0, absent: 12, unreadable: 0, 'out-of-tree': 0, truncated: 0, skipped: 0 },
+      absentPaths: paths,
+      unreadablePaths: [],
+      outOfTreePaths: [],
+      truncatedPaths: [],
+      skippedPaths: [],
+    };
+
+    const body = renderComment(outcome);
+
+    expect(body).toContain('#### Marker scan health');
+    expect(body).toContain('could not inspect 12 changed files');
+    expect(body).toContain('and 2 more');
+    expect(body).toContain('``src/0-');
+    expect(body).not.toContain('- `src/0-');
+  });
+
+  test('keeps changed-record validation errors ahead of marker reports under the body budget', async () => {
+    const root = await seed();
+    const outcome = await outcomeFor(root, ['docs/adr/0001-api.md']);
+    outcome.changedRecords = ['docs/adr/broken.md'];
+    outcome.findings = [{
+      rule: 'frontmatter-parse',
+      severity: 'error',
+      message: 'broken record',
+      path: 'docs/adr/broken.md',
+    }];
+    outcome.markerScan = {
+      totalCandidates: 1,
+      limit: 3000,
+      counts: { scanned: 0, absent: 1, unreadable: 0, 'out-of-tree': 0, truncated: 0, skipped: 0 },
+      absentPaths: ['src/a.ts'],
+      unreadablePaths: [],
+      outOfTreePaths: [],
+      truncatedPaths: [],
+      skippedPaths: [],
+    };
+    outcome.findings.push(...Array.from({ length: 4000 }, (_, index) => ({
+      rule: 'dangling-marker',
+      severity: 'warn' as const,
+      message: `claim ${index} ${'x'.repeat(60)}`,
+      path: 'src/a.ts',
+      field: 'marker',
+      pattern: '9999',
+    })));
+
+    const body = renderComment(outcome);
+
+    expect(body.length).toBeLessThanOrEqual(65536);
+    expect(body).toContain('Validation errors on changed records');
+    expect(body).toContain('docs/adr/broken.md');
   });
 });
 
@@ -120,7 +214,26 @@ describe('renderComment status awareness (#39)', () => {
 
   test('only accepted records appear under the governing heading', async () => {
     const root = await seedMixed();
-    const body = renderComment(await outcomeFor(root, ['src/api/thing.ts']));
+    const outcome = await outcomeFor(root, ['src/api/thing.ts']);
+    outcome.markerScan = {
+      totalCandidates: 1,
+      limit: 3000,
+      counts: { scanned: 1, absent: 0, unreadable: 0, 'out-of-tree': 0, truncated: 0, skipped: 0 },
+      absentPaths: [],
+      unreadablePaths: [],
+      outOfTreePaths: [],
+      truncatedPaths: [],
+      skippedPaths: [],
+    };
+    outcome.findings.push({
+      rule: 'dangling-marker',
+      severity: 'warn',
+      message: 'Source marker "@adr 9999" in src/api/thing.ts:1 does not resolve',
+      path: 'src/api/thing.ts',
+      field: 'marker',
+      pattern: '9999',
+    });
+    const body = renderComment(outcome);
 
     const governingSection = body.slice(
       body.indexOf('### Decisions governing this change'),
@@ -129,6 +242,9 @@ describe('renderComment status awareness (#39)', () => {
     expect(governingSection).toContain('**0001** — Accepted record');
     expect(governingSection).not.toContain('0002');
     expect(governingSection).not.toContain('0003');
+    expect(body).toContain(
+      '- `src/api/thing.ts` — `Source marker "@adr 9999" in src/api/thing.ts:1 does not resolve`\n\n- **0001** — Accepted record',
+    );
   });
 
   test('proposals and history are labelled with their status under their own headings', async () => {
