@@ -1,8 +1,8 @@
 # Distribution & discoverability playbook
 
-This document is a **prepared-submissions playbook** for giving `@adrkit/mcp` and
-the `@adrkit/*` CLI presence in the MCP and ADR-tooling ecosystems. It contains
-ready-to-paste content and exact procedures.
+This document is a **prepared-submissions playbook** for giving `@adrkit/mcp`,
+the `@adrkit/*` CLI, and adrkit's repository-backed Actions presence in their
+respective ecosystems. It contains ready-to-paste content and exact procedures.
 
 > **Submission status.** The official MCP registry entry (§A) **has been published**
 > — `dev.adrkit/mcp` at `0.6.0`, status `active` (first published 2026-07-28 at
@@ -598,9 +598,9 @@ Re-confirmed against `origin` on 2026-07-25 with `git ls-remote --tags origin`,
 
 `queue@v0` is not its own tag. It is the **repo-wide `v0` major tag** plus the
 subpath `packages/ci/queue`. `scripts/update-action-tag.ts` force-moves the
-`v${major}` (= `v0`) tag to the release commit during a release, but **only** when a
-new stable `vX.Y.Z` tag is pushed and the new version is newer than the tag's
-current target (see `docs/RELEASING.md`, "Subsequent releases").
+`v${major}` (= `v0`) tag to the release commit during finalization, after the
+stable GitHub release is published, but **only** when the new version is newer
+than the tag's current target (see `docs/RELEASING.md`, "Subsequent releases").
 
 ### D3 — procedure that made `queue@v0` resolve (performed by the v0.2.1 release)
 
@@ -609,8 +609,9 @@ current target (see `docs/RELEASING.md`, "Subsequent releases").
    Per `docs/RELEASING.md`: bump all four package manifests to the same version,
    merge after CI is green, then push the annotated `vX.Y.Z` tag and approve the
    `npm` deploy environment.
-2. The release workflow runs `scripts/update-action-tag.ts`, which **force-updates
-   the `v0` tag** to that release commit.
+2. At the time, the release workflow ran `scripts/update-action-tag.ts`, which
+   **force-updated the `v0` tag** to that release commit. Current releases run the
+   same guarded promotion after the draft GitHub release is published.
 3. `mbeacom/adrkit/packages/ci/queue@v0` then resolves to an Action tree that
    contains `packages/ci/queue/action.yml`, and adopters can switch the pin from the
    commit SHA to `@v0`.
@@ -728,3 +729,43 @@ MCP distribution stays per-project, which is what §A already documents.
 1. Merge the branch, so `mbeacom/adrkit` resolves as a marketplace for everyone.
 2. Optional: submit to a third-party catalog. Nothing in the repository blocks
    it, and the entry would be a pointer rather than a fork.
+
+---
+
+## G. GitHub Actions Marketplace — **PREPARED, NOT PUBLISHED**
+
+[ADR-0036](adr/0036-expose-the-governing-decisions-action-through-one-root-marketplace-entry-point.md)
+selects one listing for the governing-decisions Action. GitHub Marketplace reads
+only the repository-root Action metadata, so `action.yml` aliases the existing
+`packages/ci/action.yml` contract and runs the same committed
+`packages/ci/dist/index.js` bundle. The ARB queue remains usable at
+`mbeacom/adrkit/packages/ci/queue@<ref>` but does not receive a separate listing.
+
+The listing is not live merely because `action.yml` exists on `main`. For the
+first compatible lockstep tag, the Release workflow publishes npm and leaves a
+draft GitHub release. A human completes Marketplace publication from that draft:
+
+1. Complete the automated lockstep release procedure in `docs/RELEASING.md` and
+   confirm the GitHub release is still a draft.
+2. Open that draft and select **Publish this Action to the GitHub Marketplace**.
+3. Choose **Code review** as the primary category and **Code quality** as the
+   secondary category.
+4. Publish the release with 2FA and confirm the install snippet references
+   `mbeacom/adrkit@<immutable-release-tag>`.
+5. Confirm the resulting `release: published` workflow moved the major Action
+   tag and published the container.
+
+The existing `mbeacom/adrkit/packages/ci@<ref>` path remains supported. Do not
+advertise the moving root form, `mbeacom/adrkit@v0`: guarded recovery may move
+that shared tag to a release from before the root metadata. Marketplace guidance
+uses the immutable release tag.
+
+If that immutable release is bad, moving `v0` is insufficient. Follow
+`docs/RELEASING.md` to remove the bad release from Marketplace, warn immutable
+pins, verify the live listing, and publish a higher hotfix.
+
+Publication improves discoverability; it does not advance ADR-0014's evidence
+ladder. On 2026-11-25, review public independent workflow references, repository
+traffic attributable to the listing, actionable issues or discussions, and the
+release/support time the listing consumed. Keep the listing only if that signal
+justifies the ongoing manual release step.
