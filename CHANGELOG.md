@@ -9,6 +9,22 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Security
+
+- **`gate-change-acknowledged` now counts only when the latest labeler holds
+  the `admin` or `maintain` role**, read live from the issue-event history and
+  the collaborator-permission API, rather than trusting that anyone able to
+  apply the label (triage or write access) is a sufficient authorizer. A
+  contributor granted triage can no longer acknowledge their own gate change or
+  another contributor's. Anything that cannot be attributed or verified does
+  not count. One timing residual is recorded in the ADR rather than closed: if
+  the event history lags a removal and re-application of the label, a run
+  already in flight, the maintainer's own labeling run included, can credit
+  the earlier application.
+  Proposed by @mbeacom in review of PR #219, tracked as
+  [#232](https://github.com/mbeacom/adrkit/issues/232), recorded in
+  [ADR-0042](docs/adr/0042-count-a-gate-change-acknowledgment-only-when-an-admin-or-maintainer-applied-it.md).
+
 ### Added
 
 - **`bun run check:stale-refs` — a repository guard for stale prose citations.**

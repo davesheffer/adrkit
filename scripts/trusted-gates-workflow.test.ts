@@ -29,6 +29,7 @@ const WORKFLOW = Bun.YAML.parse(SOURCE) as {
       permissions?: Record<string, string>;
       steps: Array<{
         name?: string;
+        id?: string;
         if?: string;
         uses?: string;
         with?: Record<string, unknown>;
@@ -233,6 +234,117 @@ describe('the acknowledgment is bound to what it acknowledged', () => {
   });
 });
 
+describe('the acknowledgment counts only when an admin or maintainer applied it (ADR-0042)', () => {
+  const GATE_STEPS = JOBS['gate-integrity']?.steps ?? [];
+  const listing = () => stepNamed("List the pull request's changed paths");
+  const lookup = () => stepNamed('Read who last applied the acknowledgment');
+  const verdict = () => stepNamed('Verify no gate-defining path changed');
+  const dismiss = () => stepNamed('Dismiss the acknowledgment');
+
+  test('the dismissal step exposes its outcome under a stable id', () => {
+    // The verdict step reads `steps.dismiss.outputs.dismissed`; a renamed id
+    // would silently stop wiring the two steps together.
+    expect(dismiss().id).toBe('dismiss');
+  });
+
+  test('dismissed=true is the last line the dismissal step can run', () => {
+    // It must come after the "still present" verification exits, so an early
+    // `exit 0` (the title-edit path) or a failed verification (`exit 1`) never
+    // reaches it and `dismissed` stays unset instead of lying.
+    const lines = (dismiss().run ?? '').trim().split('\n');
+    expect(lines.at(-1)).toBe('echo "dismissed=true" >> "$GITHUB_OUTPUT"');
+  });
+
+  test('the verdict maps DISMISSED from the dismissal step, not a re-derived value', () => {
+    expect(verdict().env).toMatchObject({
+      DISMISSED: "${{ steps.dismiss.outputs.dismissed == 'true' }}",
+    });
+    expect(verdict().run ?? '').toContain('--dismissed-this-run "${DISMISSED}"');
+  });
+
+  test('the lookup step never claims a dismissal; only the verdict decides that', () => {
+    // Print mode refuses `--dismissed-this-run`; passing it there would be a
+    // second, redundant path to the same decision.
+    expect(lookup().run ?? '').not.toContain('--dismissed-this-run');
+  });
+
+  test('the label history is listed in full from the issue events', () => {
+    // Paginated for the reason the labels are: a check that picks "the latest
+    // application" out of a partial page is picking out of the wrong list.
+    expect(listing().run ?? '').toMatch(
+      /gh api --paginate --slurp\s*\\?\s*"repos\/\$\{REPO\}\/issues\/\$\{PR_NUMBER\}\/events"\s*>\s*"\$\{RUNNER_TEMP\}\/pr-label-events\.json"/,
+    );
+  });
+
+  test('who applied it is read from the history, not from the event sender', () => {
+    // On every event but `labeled` the sender is whoever pushed, edited, or
+    // reopened — not whoever applied the label.
+    for (const step of [listing(), lookup()]) {
+      expect(JSON.stringify(step.env ?? {})).not.toContain('sender');
+      expect(step.run ?? '').not.toContain('sender');
+    }
+  });
+
+  test('the steps run in the order the verdict depends on', () => {
+    const index = (fragment: string) =>
+      GATE_STEPS.findIndex((step) => step.name?.includes(fragment));
+    const order = [
+      index('Dismiss the acknowledgment'),
+      index("List the pull request's changed paths"),
+      index('Read who last applied the acknowledgment'),
+      index('Verify no gate-defining path changed'),
+    ];
+    expect(order.every((position) => position >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  test('the actor comes from the script, and the role from the collaborator endpoint', () => {
+    const run = lookup().run ?? '';
+    expect(run).toContain('set -euo pipefail');
+    expect(run).toMatch(/actor=\$\(bun scripts\/check-gate-integrity\.ts --print-ack-actor/);
+    expect(run).toContain('--labels "${RUNNER_TEMP}/pr-labels.json"');
+    expect(run).toContain('--label-events "${RUNNER_TEMP}/pr-label-events.json"');
+    expect(run).toContain(
+      'gh api "repos/${REPO}/collaborators/${actor}/permission" > "${RUNNER_TEMP}/ack-permission.json"',
+    );
+  });
+
+  test('a failed role lookup is recorded as failed, not swallowed into a pass', () => {
+    const run = lookup().run ?? '';
+    expect(run).toContain('if ! gh api "repos/${REPO}/collaborators/${actor}/permission"');
+    expect(run).toContain(`echo '{"lookupFailed":true}' > "\${RUNNER_TEMP}/ack-permission.json"`);
+    expect(run).not.toContain('|| true');
+    // No actor is recorded as `null`, which the verdict reads as "nothing to count".
+    expect(run).toContain(`echo 'null' > "\${RUNNER_TEMP}/ack-permission.json"`);
+  });
+
+  test('the lookup step takes its inputs through env, like every other step', () => {
+    // The existing no-interpolation check iterates ALL_STEPS; asserted here that
+    // the new step is among them rather than assumed.
+    expect(ALL_STEPS).toContain(lookup());
+    expect(lookup().run ?? '').not.toContain('${{');
+    expect(lookup().env).toEqual({
+      GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
+      REPO: '${{ github.repository }}',
+    });
+  });
+
+  test('the verdict reads the history, the role, and the triggering event', () => {
+    const run = verdict().run ?? '';
+    expect(run).toContain('--label-events "${RUNNER_TEMP}/pr-label-events.json"');
+    expect(run).toContain('--ack-permission "${RUNNER_TEMP}/ack-permission.json"');
+    expect(run).toContain('--trigger-action "${EVENT_ACTION}"');
+    expect(run).toContain('--trigger-label "${EVENT_LABEL}"');
+    expect(run).toContain('--trigger-sender "${EVENT_SENDER}"');
+    expect(run).not.toContain('--print-ack-actor');
+    expect(verdict().env).toMatchObject({
+      EVENT_ACTION: '${{ github.event.action }}',
+      EVENT_LABEL: '${{ github.event.label.name }}',
+      EVENT_SENDER: '${{ github.event.sender.login }}',
+    });
+  });
+});
+
 describe('no pull-request code can execute here', () => {
   test('every checkout takes the default branch, never a ref', () => {
     const checkouts = ALL_STEPS.filter((step) => step.uses?.startsWith('actions/checkout@'));
@@ -274,7 +386,9 @@ describe('no pull-request code can execute here', () => {
     const invocations = ALL_STEPS.map((step) => step.run ?? '').filter((run) =>
       run.includes('scripts/check-'),
     );
-    expect(invocations.length).toBe(2);
+    // Three since ADR-0042: the DCO check, the step that reads who last applied
+    // the acknowledgment, and the gate-integrity verdict.
+    expect(invocations.length).toBe(3);
     for (const run of invocations) {
       expect(run).toMatch(/bun scripts\/check-(dco|gate-integrity)\.ts/);
       expect(run).not.toContain('bun run check:');
@@ -300,7 +414,7 @@ describe('privilege stays minimal', () => {
     // leading whitespace before testing for the `::` prefix — so indentation is
     // not protection.
     const printing = ALL_STEPS.filter((step) => /scripts\/check-/.test(step.run ?? ''));
-    expect(printing.length).toBe(2);
+    expect(printing.length).toBe(3);
     for (const step of printing) {
       expect(step.run).toContain('::stop-commands::');
       expect(step.run).toContain('trap');

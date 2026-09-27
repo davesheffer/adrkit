@@ -185,6 +185,13 @@ jobs:
     # file, as `trusted-dco` was — not to extend the protected path list, which
     # cannot reach code the gate itself executes.
     #
+    # Who applied the acknowledgment matters, not only whether it is present
+    # (ADR-0042, #232). Triage can apply a label, so presence alone let anyone
+    # granted triage acknowledge their own gate change. The label counts only when
+    # the timeline's latest application of it was by someone whose role here is
+    # `admin` or `maintain`; anything that cannot be attributed or verified does
+    # not count.
+    #
     # Dismissal is a *step* here rather than a separate job on purpose. It has to
     # happen before the labels are read, and expressing that across jobs needs a
     # `needs` edge plus an `always()` guard to survive the skip on non-push
@@ -212,6 +219,7 @@ jobs:
       # free, so a stale acknowledgment could be made to look fresh. Removing the
       # label depends on no attacker-controlled value at all.
       - name: Dismiss the acknowledgment when what it acknowledged has moved
+        id: dismiss
         # An **exclusion** list, deliberately, not an inclusion list. Enumerating
         # the actions that dismiss is what produced two separate holes: `edited`
         # was missing, so a retarget carried the acknowledgment onto a different
@@ -272,6 +280,7 @@ jobs:
             exit 1
           fi
           echo "no acknowledgment is in effect for this head and base"
+          echo "dismissed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check out the default branch (never the pull request)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -292,7 +301,15 @@ jobs:
       # The payload is a snapshot taken before `dismiss-stale-acknowledgment` ran,
       # so on a push it would still show the label this run has just removed —
       # reintroducing the bypass the dismissal exists to close.
-      - name: List the pull request's changed paths and its labels as they are now
+      #
+      # Who applied the label comes from the live issue-event history, **not**
+      # from `github.event.sender`. The sender is the labeler only on a `labeled`
+      # run; on every other event it is whoever pushed, edited, or reopened, and
+      # judging that person's role would credit the acknowledgment to someone
+      # who never gave it. The history is paginated for the same reason the
+      # labels are: "the latest application" picked from a partial page is picked
+      # from the wrong list. The script sorts it rather than trusting API order.
+      - name: List the pull request's changed paths, its labels, and the label history as they are now
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -303,6 +320,53 @@ jobs:
             "repos/${REPO}/pulls/${PR_NUMBER}/files" > "${RUNNER_TEMP}/pr-files.json"
           gh api --paginate --slurp \
             "repos/${REPO}/issues/${PR_NUMBER}/labels" > "${RUNNER_TEMP}/pr-labels.json"
+          gh api --paginate --slurp \
+            "repos/${REPO}/issues/${PR_NUMBER}/events" > "${RUNNER_TEMP}/pr-label-events.json"
+
+      # The role lookup needs a login, and the login comes from the history, so the
+      # script names it first. `--print-ack-actor` prints the login of the latest
+      # application only when the label is present, the latest event for it is an
+      # application, and the login passes `isGitHubLogin` — alphanumerics and
+      # hyphens, optionally `[bot]`. That validation is what makes `${actor}` safe
+      # to interpolate into the URL and the log line below: nothing that passes
+      # can carry a `/`, a `?`, a space, or a newline. Otherwise it prints nothing,
+      # and `null` is recorded.
+      #
+      # A failed lookup is **recorded, not fatal.** A clean pull request carrying a
+      # stray label must stay green, and whether a failed lookup matters depends on
+      # whether a gate path changed — which the verdict step decides. It reads
+      # `lookupFailed` as "not verified" and blocks only when a gate path changed.
+      # Nothing here swallows the failure into a pass.
+      #
+      # The endpoint answers 403 "Must have push access to view collaborator
+      # permission." to a token without push access. Whether this job's
+      # `GITHUB_TOKEN` can read it is not yet proven on a real run (ADR-0042). If
+      # it cannot, every acknowledgment — the owner's included — records as
+      # `lookupFailed` and does not count: the fail-closed direction.
+      #
+      # Wrapped in `::stop-commands::` like every step that invokes a check script:
+      # its error output quotes API responses, which are not this file's to trust.
+      - name: Read who last applied the acknowledgment, and their role now
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          token="adrkit-$(openssl rand -hex 16)"
+          trap 'echo "::${token}::"' EXIT
+          echo "::stop-commands::${token}"
+          actor=$(bun scripts/check-gate-integrity.ts --print-ack-actor \
+            --labels "${RUNNER_TEMP}/pr-labels.json" \
+            --label-events "${RUNNER_TEMP}/pr-label-events.json")
+          if [ -z "$actor" ]; then
+            echo 'null' > "${RUNNER_TEMP}/ack-permission.json"
+            echo "no attributable acknowledgment to look up"
+            exit 0
+          fi
+          if ! gh api "repos/${REPO}/collaborators/${actor}/permission" > "${RUNNER_TEMP}/ack-permission.json"; then
+            echo '{"lookupFailed":true}' > "${RUNNER_TEMP}/ack-permission.json"
+            echo "could not read the role of ${actor}; the acknowledgment will not count" >&2
+          fi
 
       # `--expected-files` is the fail-quiet guard. The files endpoint caps at 3000
       # entries and truncates rather than erroring, and a gate path past the cap
@@ -313,9 +377,37 @@ jobs:
       # filename, and the runner trims leading whitespace before looking for the
       # `::` prefix — so indentation is not protection. The script escapes control
       # characters as well; neither measure is trusted alone.
+      #
+      # The triggering event goes in so the script can cross-check it: on a
+      # `labeled` run for the acknowledgment the payload's sender *is* the labeler,
+      # and if the history's latest application names someone else, the history
+      # has not caught up with this event. That reads as unverified, not as the
+      # earlier labeler's acknowledgment. `EVENT_LABEL` is empty on every
+      # non-label event, which the script accepts.
+      #
+      # `DISMISSED` closes a second, narrower race than the trigger cross-check
+      # above. The dismissal step already read the label list *after* its delete
+      # and found it empty, so a label present when this step reads the history
+      # was applied during this run, after that dismissal. Consider: a maintainer
+      # labels; a triager pushes; this run's dismissal removes the label and
+      # confirms it absent; the triager re-applies it while checkout and setup
+      # run; the events API has not yet caught up enough to show either the
+      # bot's `unlabeled` or the triager's `labeled`, so the latest event it
+      # returns is still the maintainer's. Cross-checking against *this* event's
+      # trigger would not catch that — this run was not triggered by a label
+      # event at all. `dismissed` instead says "trust nothing that formed after
+      # dismissal without corroboration", and the `labeled` run the re-application
+      # started is the one that judges it. `steps.dismiss.outputs.dismissed` is
+      # unset (not `'true'`) when the step did not run or exited before reaching
+      # its last line, so the comparison below is exact rather than a truthiness
+      # check.
       - name: Verify no gate-defining path changed without an acknowledgment
         env:
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          EVENT_SENDER: ${{ github.event.sender.login }}
+          DISMISSED: ${{ steps.dismiss.outputs.dismissed == 'true' }}
         run: |
           set -euo pipefail
           token="adrkit-$(openssl rand -hex 16)"
@@ -324,4 +416,10 @@ jobs:
           bun scripts/check-gate-integrity.ts \
             --files "${RUNNER_TEMP}/pr-files.json" \
             --labels "${RUNNER_TEMP}/pr-labels.json" \
-            --expected-files "${CHANGED_FILES}"
+            --label-events "${RUNNER_TEMP}/pr-label-events.json" \
+            --ack-permission "${RUNNER_TEMP}/ack-permission.json" \
+            --expected-files "${CHANGED_FILES}" \
+            --trigger-action "${EVENT_ACTION}" \
+            --trigger-label "${EVENT_LABEL}" \
+            --trigger-sender "${EVENT_SENDER}" \
+            --dismissed-this-run "${DISMISSED}"

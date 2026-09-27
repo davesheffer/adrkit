@@ -54,9 +54,14 @@ $ gh label list --repo mbeacom/adrkit --search gate
 gate-change-acknowledged  A maintainer has seen and accepted this PR's change to the CI gate surface (ADR-0035)  #B60205
 ```
 
-Applying a label requires triage or write access, which is what makes it usable
-as an authorization token for §1.3. It is **not** an approval and not a claim of
-correctness — it asserts only that the change was seen.
+Applying a label requires triage or write access, but as of
+[ADR-0042](adr/0042-count-a-gate-change-acknowledgment-only-when-an-admin-or-maintainer-applied-it.md)
+that permission alone is no longer what makes it usable as an authorization
+token for §1.3: `gate-integrity` only counts the label when the actor who most
+recently applied it, per the live issue-event history, holds the `admin` or
+`maintain` role at the time the check runs. It is **not** an approval and not a
+claim of correctness — it asserts only that the change was seen, by someone
+that role check accepts.
 
 **Rollback:** `gh label delete gate-change-acknowledged --repo mbeacom/adrkit`.
 Deleting it while `gate-integrity` is required would make every gate-touching
