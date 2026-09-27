@@ -410,3 +410,4 @@ if (import.meta.main) {
     process.exit(1);
   }
 }
+// dry run for #232: gate-path change, do not merge
