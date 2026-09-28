@@ -9,6 +9,25 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Security
+
+- **`gate-change-acknowledged` now counts only when the latest labeler holds
+  the `admin` or `maintain` role**, read live from the issue-event history and
+  the collaborator-permission API, rather than trusting that anyone able to
+  apply the label (triage or write access) is a sufficient authorizer. A
+  contributor granted triage can no longer acknowledge their own gate change or
+  another contributor's. Anything that cannot be attributed or verified does
+  not count. Two residuals of this rule are recorded in the ADR rather than
+  closed. If
+  the event history lags a removal and re-application of the label, a run
+  already in flight, the maintainer's own labeling run included, can credit
+  the earlier application. And someone with write access who renames the
+  label away before a push and back after it keeps an earlier
+  acknowledgment through that push's dismissal.
+  Proposed by @mbeacom in review of PR #219, tracked as
+  [#232](https://github.com/mbeacom/adrkit/issues/232), recorded in
+  [ADR-0042](docs/adr/0042-count-a-gate-change-acknowledgment-only-when-an-admin-or-maintainer-applied-it.md).
+
 ### Added
 
 - **A `regenerate-artifacts` label for Dependabot pull requests.** Applying it
